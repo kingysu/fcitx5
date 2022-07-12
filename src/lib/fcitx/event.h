@@ -125,6 +125,7 @@ enum class EventType : uint32_t {
      * @since 5.0.11
      */
     InputContextInvokeAction = InputContextEventFlag | 0xE,
+    InputContextShowVirtualKeyboard = InputContextEventFlag | 0xF,
 
     InputContextForwardKey = InputMethodEventFlag | 0x1,
     InputContextCommitString = InputMethodEventFlag | 0x2,
@@ -458,6 +459,7 @@ FCITX_DEFINE_SIMPLE_EVENT(SurroundingTextUpdated,
                           InputContextSurroundingTextUpdated);
 FCITX_DEFINE_SIMPLE_EVENT(CursorRectChanged, InputContextCursorRectChanged);
 FCITX_DEFINE_SIMPLE_EVENT(UpdatePreedit, InputContextUpdatePreedit);
+FCITX_DEFINE_SIMPLE_EVENT(InputContextShowVirtualKeyboard, InputContextShowVirtualKeyboard);
 
 class FCITXCORE_EXPORT InputMethodGroupChangedEvent : public Event {
 public:

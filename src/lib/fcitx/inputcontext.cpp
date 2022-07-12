@@ -286,6 +286,11 @@ void InputContext::invokeAction(InvokeActionEvent &event) {
     d->postEvent(event);
 }
 
+void InputContext::showVirtualKeyboard() {
+    FCITX_D();
+    d->emplaceEvent<InputContextShowVirtualKeyboardEvent>(this);
+}
+
 void InputContext::reset(ResetReason) { reset(); }
 
 void InputContext::reset() {

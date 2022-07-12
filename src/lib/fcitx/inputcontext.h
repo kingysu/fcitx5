@@ -140,6 +140,9 @@ public:
     /// Invoke an action on the preedit
     void invokeAction(InvokeActionEvent &event);
 
+    /// Show virtual keyboard
+    void showVirtualKeyboard();
+
     /**
      * Returns the mutable surrounding text of the input context.
      *

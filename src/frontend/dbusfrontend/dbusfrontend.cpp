@@ -355,6 +355,13 @@ public:
         invokeAction(event);
     }
 
+    void showVirtualKeyboardDBus() {
+        if (!hasFocus()) {
+            focusIn();
+        }
+        showVirtualKeyboard();
+    }
+
     void setBlocked() {
         assert(!blocked_);
         blocked_ = true;
@@ -390,6 +397,8 @@ private:
     FCITX_OBJECT_VTABLE_METHOD(nextPage, "NextPage", "", "");
     FCITX_OBJECT_VTABLE_METHOD(selectCandidate, "SelectCandidate", "i", "");
     FCITX_OBJECT_VTABLE_METHOD(invokeActionDBus, "InvokeAction", "ui", "");
+
+    FCITX_OBJECT_VTABLE_METHOD(showVirtualKeyboardDBus, "showVirtualKeyboard", "", "");
 
     FCITX_OBJECT_VTABLE_SIGNAL(commitStringDBus, "CommitString", "s");
     FCITX_OBJECT_VTABLE_SIGNAL(currentIM, "CurrentIM", "sss");
