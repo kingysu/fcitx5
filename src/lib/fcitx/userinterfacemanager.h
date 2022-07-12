@@ -39,6 +39,8 @@ public:
     void expire(InputContext *inputContext);
     void flush();
     void updateAvailability();
+    void showVirtualKeyboard();
+    void hideVirtualKeyboard();
     std::string currentUI() const;
 
 private:

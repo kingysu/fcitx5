@@ -1086,7 +1086,7 @@ Instance::Instance(int argc, char **argv) {
     d->eventWatchers_.emplace_back(d->watchEvent(
         EventType::InputContextShowVirtualKeyboard, EventWatcherPhase::ReservedFirst,
         [d](Event &) {
-            //d->uiManager_.showVirtualKeyboard();
+            d->uiManager_.showVirtualKeyboard();
         }));
     d->eventWatchers_.emplace_back(d->watchEvent(
         EventType::InputContextDestroyed, EventWatcherPhase::ReservedFirst,

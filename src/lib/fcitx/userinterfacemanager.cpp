@@ -250,6 +250,53 @@ void UserInterfaceManager::updateAvailability() {
     }
 }
 
+void UserInterfaceManager::showVirtualKeyboard() {
+    FCITX_D();
+    auto *oldUI = d->ui_;
+    UserInterface *newUI = nullptr;
+    std::string newUIName;
+    for (auto &name : d->uis_) {
+        auto *ui =
+            static_cast<UserInterface *>(d->addonManager_->addon(name, true));
+        if (ui && ui->available()
+            && ui->isVirtualKeyboard()) {
+            newUI = static_cast<UserInterface *>(ui);
+            newUIName = name;
+            break;
+        }
+    }
+
+    if (newUI == nullptr) {
+        FCITX_DEBUG() << "No virtual keyboard found";
+        return;
+    }
+
+    if (oldUI != newUI) {
+        FCITX_DEBUG() << "Switching UI addon to " << newUIName;
+        if (oldUI && oldUI->isVirtualKeyboard()) {
+            oldUI->suspend();
+        }
+        if (newUI) {
+            newUI->resume();
+        }
+        d->ui_ = newUI;
+        d->uiName_ = newUIName;
+        if (d->addonManager_->instance()) {
+            d->addonManager_->instance()->postEvent(UIChangedEvent());
+        }
+    }
+}
+
+void UserInterfaceManager::hideVirtualKeyboard() {
+    FCITX_D();
+    auto *ui = d->ui_;
+    if (!ui->isVirtualKeyboard()) {
+        return;
+    }
+
+    ui->suspend();
+}
+
 std::string UserInterfaceManager::currentUI() const {
     FCITX_D();
     return d->uiName_;

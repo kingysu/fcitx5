@@ -46,6 +46,7 @@ public:
     virtual bool available() = 0;
     virtual void suspend() = 0;
     virtual void resume() = 0;
+    virtual bool isVirtualKeyboard() const { return false; }
 };
 }; // namespace fcitx
 
