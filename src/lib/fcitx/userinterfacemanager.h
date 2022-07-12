@@ -41,11 +41,13 @@ public:
     void updateAvailability();
     void showVirtualKeyboard();
     void hideVirtualKeyboard();
+    bool isVirtualKeyboardVisible() const { return virtual_keyboard_visible_; }
     std::string currentUI() const;
 
 private:
     std::unique_ptr<UserInterfaceManagerPrivate> d_ptr;
     FCITX_DECLARE_PRIVATE(UserInterfaceManager);
+    bool virtual_keyboard_visible_ = false;
 };
 } // namespace fcitx
 

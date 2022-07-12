@@ -291,6 +291,16 @@ void InputContext::showVirtualKeyboard() {
     d->emplaceEvent<InputContextShowVirtualKeyboardEvent>(this);
 }
 
+void InputContext::hideVirtualKeyboard() {
+    FCITX_D();
+    d->emplaceEvent<InputContextHideVirtualKeyboardEvent>(this);
+}
+
+bool InputContext::isVirtualKeyboardVisible() {
+    FCITX_D();
+    d->manager_.instance()->isVirtualKeyboardVisible();
+}
+
 void InputContext::reset(ResetReason) { reset(); }
 
 void InputContext::reset() {

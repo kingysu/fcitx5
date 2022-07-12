@@ -473,6 +473,8 @@ public:
      */
     bool isRestartRequested() const;
 
+    bool isVirtualKeyboardVisible() const;
+
 protected:
     // For testing purpose
     InstancePrivate *privateData();

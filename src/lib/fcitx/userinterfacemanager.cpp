@@ -278,6 +278,8 @@ void UserInterfaceManager::showVirtualKeyboard() {
         }
         if (newUI) {
             newUI->resume();
+
+            virtual_keyboard_visible_ = true;
         }
         d->ui_ = newUI;
         d->uiName_ = newUIName;
@@ -293,6 +295,8 @@ void UserInterfaceManager::hideVirtualKeyboard() {
     if (!ui->isVirtualKeyboard()) {
         return;
     }
+
+    virtual_keyboard_visible_ = false;
 
     ui->suspend();
 }

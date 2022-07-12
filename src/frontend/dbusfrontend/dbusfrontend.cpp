@@ -362,6 +362,14 @@ public:
         showVirtualKeyboard();
     }
 
+    void hideVirtualKeyboardDBus() {
+        hideVirtualKeyboard();
+    }
+
+    bool isVirtualKeyboardVisibleDBus() {
+        return isVirtualKeyboardVisible();
+    }
+
     void setBlocked() {
         assert(!blocked_);
         blocked_ = true;
@@ -399,6 +407,8 @@ private:
     FCITX_OBJECT_VTABLE_METHOD(invokeActionDBus, "InvokeAction", "ui", "");
 
     FCITX_OBJECT_VTABLE_METHOD(showVirtualKeyboardDBus, "showVirtualKeyboard", "", "");
+    FCITX_OBJECT_VTABLE_METHOD(hideVirtualKeyboardDBus, "hideVirtualKeyboard", "", "");
+    FCITX_OBJECT_VTABLE_METHOD(isVirtualKeyboardVisibleDBus, "isVirtualKeyboardVisible", "", "b");
 
     FCITX_OBJECT_VTABLE_SIGNAL(commitStringDBus, "CommitString", "s");
     FCITX_OBJECT_VTABLE_SIGNAL(currentIM, "CurrentIM", "sss");

@@ -1328,6 +1328,11 @@ bool Instance::isRestartRequested() const {
     return d->restart_;
 }
 
+bool Instance::isVirtualKeyboardVisible() const {
+    FCITX_D();
+    return d->uiManager_.isVirtualKeyboardVisible();
+}
+
 InstancePrivate *Instance::privateData() {
     FCITX_D();
     return d;
