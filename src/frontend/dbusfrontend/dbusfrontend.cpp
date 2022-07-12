@@ -400,7 +400,7 @@ private:
     // This is contains:
     // - a(si)i preedit
     // - a(si) aux up
-    // - a(si) aux aux
+    // - a(si) aux down
     // - a(ss) candidate label + text
     // - i candidate index
     // - i candidate layout
