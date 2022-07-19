@@ -1,0 +1,12 @@
+[Addon]
+Name=Fcitx5 Virtual Keyboard
+Type=SharedLibrary
+Library=libvirtualkeyboard
+Category=UI
+Version=@PROJECT_VERSION@
+UIPriority=51
+OnDemand=True
+
+[Addon/Dependencies]
+0=dbus
+1=core:@PROJECT_VERSION@
