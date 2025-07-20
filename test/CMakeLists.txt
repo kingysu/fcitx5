@@ -3,6 +3,9 @@ include_directories(${CMAKE_CURRENT_BINARY_DIR})
 
 add_subdirectory(addon)
 
+add_library(eventlooptests STATIC eventlooptests.cpp)
+target_link_libraries(eventlooptests Fcitx5::Utils Pthread::Pthread)
+
 set(FCITX_UTILS_TEST
     testflags
     teststringutils
@@ -14,7 +17,6 @@ set(FCITX_UTILS_TEST
     testlist
     testfs
     testlibrary
-    teststandardpath
     testunixfd
     testmetastring
     testhandlertable
@@ -24,16 +26,34 @@ set(FCITX_UTILS_TEST
     testeventdispatcher
     testrect
     testfallbackuuid
-    testsemver)
+    testsemver
+    testenviron
+    testfdstreambuf)
+
+if (WIN32)
+    list(APPEND FCITX_UTILS_TEST teststandardpaths_win)
+else()
+    list(APPEND FCITX_UTILS_TEST teststandardpath)
+    list(APPEND FCITX_UTILS_TEST teststandardpaths_unix)
+endif()
 
 set(FCITX_UTILS_DBUS_TEST
     testdbusmessage
     testdbus
     testservicewatcher)
 
+if(HAVE_NO_DEPRECATED_DECLARATIONS)
+    set_source_files_properties(teststandardpath.cpp PROPERTIES COMPILE_FLAGS "-Wno-deprecated-declarations")
+endif()
+
 set(testdbus_LIBS Pthread::Pthread)
 set(testeventdispatcher_LIBS Pthread::Pthread)
-set(testevent_LIBS Pthread::Pthread)
+set(testevent_LIBS eventlooptests)
+
+if (NOT WIN32)
+list(APPEND FCITX_UTILS_TEST testcustomeventloop)
+set(testcustomeventloop_LIBS eventlooptests)
+endif()
 
 find_program(XVFB_BIN Xvfb)
 
@@ -51,7 +71,7 @@ if (ENABLE_DBUS)
 
         if (DBUS_DAEMON_BIN)
             add_test(NAME ${TESTCASE}
-                    COMMAND DBusWrapper "${DBUS_DAEMON_BIN}" "${CMAKE_CURRENT_BINARY_DIR}/${TESTCASE}" ${${TESTCASE}_ARGS})
+                    COMMAND DBusWrapper "${DBUS_DAEMON_BIN}" "$<TARGET_FILE:${TESTCASE}>" ${${TESTCASE}_ARGS})
         endif()
     endforeach()
 endif()
@@ -79,6 +99,7 @@ foreach(TESTCASE ${FCITX_CONFIG_TEST})
 endforeach()
 
 set(testinputcontext_LIBS Fcitx5::Module::TestFrontend Fcitx5::Module::TestIM)
+set(testinstance_LIBS Fcitx5::Module::TestFrontend)
 
 set(FCITX_CORE_TEST
     testinputcontext
@@ -100,6 +121,8 @@ foreach(TESTCASE ${FCITX_CORE_TEST})
 endforeach()
 
 add_dependencies(testaddon dummyaddon)
+add_dependencies(testinstance copy-addon testfrontend testim)
+add_dependencies(testinputcontext copy-addon testfrontend testim)
 
 if (ENABLE_KEYBOARD)
     add_executable(testxkbrules testxkbrules.cpp ../src/im/keyboard/xkbrules.cpp ../src/im/keyboard/xmlparser.cpp)

@@ -12,13 +12,18 @@
 /// \file
 /// \brief C++ Utility functions for handling utf8 strings.
 
+#include <sys/types.h>
+#include <cstddef>
+#include <cstdint>
 #include <iterator>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <fcitx-utils/cutf8.h>
+#include <fcitx-utils/fcitxutils_export.h>
+#include <fcitx-utils/macros.h>
 #include <fcitx-utils/misc.h>
-#include "fcitxutils_export.h"
 
 namespace fcitx::utf8 {
 
@@ -292,6 +297,13 @@ auto MakeUTF8StringViewRange(const T &str) {
         MakeUTF8StringViewIterator(std::begin(str), std::end(str)),
         MakeUTF8StringViewIterator(std::end(str), std::end(str)));
 }
+
+#ifdef _WIN32
+
+std::string UTF16ToUTF8(std::wstring_view data);
+std::wstring UTF8ToUTF16(std::string_view str);
+
+#endif
 
 } // namespace fcitx::utf8
 

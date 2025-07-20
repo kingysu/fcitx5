@@ -6,15 +6,22 @@
  */
 #include "buffer.h"
 #include <fcntl.h>
-#include <stdlib.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <cerrno>
+#include <cstdint>
+#include <cstdlib>
+#include <filesystem>
 #include <stdexcept>
+#include <string>
 #include <vector>
 #include <cairo.h>
 #include <sys/syscall.h>
+#include <wayland-client.h>
+#include "fcitx-utils/environ.h"
+#include "fcitx-utils/fs.h"
 #include "fcitx-utils/stringutils.h"
-#include "theme.h"
+#include "fcitx-utils/unixfd.h"
 #include "wl_buffer.h"
 #include "wl_callback.h"
 #include "wl_shm.h"
@@ -28,7 +35,7 @@ namespace fcitx::wayland {
         __VA_ARGS__;                                                           \
     } while (ret < 0 && errno == EINTR)
 
-UnixFD openShm(void) {
+UnixFD openShm() {
     int ret;
     // We support multiple different methods, memfd / shm_open on BSD /
     // O_TMPFILE. While linux has shm_open, it doesn't have SHM_ANON extension
@@ -70,7 +77,7 @@ UnixFD openShm(void) {
     }
 #endif
 
-    const char *path = getenv("XDG_RUNTIME_DIR");
+    auto path = getEnvironment("XDG_RUNTIME_DIR");
     if (!path) {
         throw std::runtime_error("XDG_RUNTIME_DIR is not set");
     }
@@ -80,7 +87,7 @@ UnixFD openShm(void) {
     // It is said that some old glibc may have problem.
 #if defined(O_TMPFILE) && (O_TMPFILE & O_DIRECTORY) == O_DIRECTORY
     do {
-        std::string pathStr = fs::cleanPath(path);
+        std::string pathStr = fs::cleanPath(*path);
         RETRY_ON_EINTR(ret =
                            open(pathStr.data(),
                                 O_TMPFILE | O_CLOEXEC | O_EXCL | O_RDWR, 0600));
@@ -94,9 +101,8 @@ UnixFD openShm(void) {
     } while (0);
 #endif
 
-    auto filename = stringutils::joinPath(path, "fcitx-wayland-shm-XXXXXX");
-    std::vector<char> v(filename.begin(), filename.end());
-    v.push_back('\0');
+    auto filename = std::filesystem::path(*path) / "fcitx-wayland-shm-XXXXXX";
+    std::string v = filename.string();
     RETRY_ON_EINTR(ret = mkstemp(v.data()));
 
     if (ret >= 0) {

@@ -7,6 +7,7 @@
 
 #include "fcitx-utils/log.h"
 #include "fcitx-utils/metastring.h"
+#include "fcitx-utils/testing.h"
 #include "fcitx/addoninstance.h"
 #include "fcitx/addonmanager.h"
 #include "addon/dummyaddon_public.h"
@@ -16,9 +17,8 @@ double f(int) { return 0; }
 
 int main() {
     fcitx::Log::setLogRule("default=5");
-    setenv("SKIP_FCITX_PATH", "1", 1);
-    setenv("XDG_DATA_DIRS", FCITX5_SOURCE_DIR "/test/addon2", 1);
-    setenv("FCITX_ADDON_DIRS", FCITX5_BINARY_DIR "/test/addon", 1);
+    fcitx::setupTestingEnvironmentPath(
+        FCITX5_BINARY_DIR, {"bin"}, {FCITX5_SOURCE_DIR "/test/addon2/fcitx5"});
     fcitx::AddonManager manager;
     manager.registerDefaultLoader(nullptr);
     manager.load();
@@ -41,5 +41,12 @@ int main() {
     FCITX_ASSERT(addon2);
     auto *addon3 = manager.addon("dummyaddon3");
     FCITX_ASSERT(!addon3);
+    // loading dummyaddondeps will change log rule level to 3.
+    FCITX_ASSERT(
+        !fcitx::Log::defaultCategory().checkLogLevel(fcitx::LogLevel::Info));
+    FCITX_ASSERT(
+        fcitx::Log::defaultCategory().checkLogLevel(fcitx::LogLevel::Warn));
+    fcitx::Log::setLogRule("default=5");
+
     return 0;
 }

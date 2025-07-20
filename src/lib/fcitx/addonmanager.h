@@ -9,11 +9,15 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include <fcitx-utils/macros.h>
+#include <fcitx-utils/semver.h>
+#include <fcitx/addoninfo.h>
+#include <fcitx/addoninstance.h>
 #include <fcitx/addonloader.h>
-#include "fcitxcore_export.h"
+#include <fcitx/fcitxcore_export.h>
 
 /// \addtogroup FcitxCore
 /// \{

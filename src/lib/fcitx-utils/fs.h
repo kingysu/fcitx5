@@ -7,11 +7,15 @@
 #ifndef _FCITX_UTILS_FS_H_
 #define _FCITX_UTILS_FS_H_
 
-#include <cstdio>
+#include <sys/types.h>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <fcitx-utils/fcitxutils_export.h>
 #include <fcitx-utils/misc.h>
-#include "fcitxutils_export.h"
 
 /// \addtogroup FcitxUtils
 /// \{
@@ -40,11 +44,11 @@ FCITXUTILS_EXPORT bool islnk(const std::string &path);
 /// \brief Get the clean path by removing . , .. , and duplicate / in the path.
 FCITXUTILS_EXPORT std::string cleanPath(const std::string &path);
 /// \brief Create directory recursively.
-FCITXUTILS_EXPORT bool makePath(const std::string &path);
+FCITXUTILS_EXPORT bool makePath(const std::filesystem::path &path);
 /// \brief Get directory name of path
 FCITXUTILS_EXPORT std::string dirName(const std::string &path);
 /// \brief Get base file name of path.
-FCITXUTILS_EXPORT std::string baseName(const std::string &path);
+FCITXUTILS_EXPORT std::string baseName(std::string_view path);
 
 /// \brief a simple wrapper around read(), ignore EINTR.
 FCITXUTILS_EXPORT ssize_t safeRead(int fd, void *data, size_t maxlen);
@@ -53,12 +57,16 @@ FCITXUTILS_EXPORT ssize_t safeWrite(int fd, const void *data, size_t maxlen);
 /// \brief read symlink.
 FCITXUTILS_EXPORT std::optional<std::string> readlink(const std::string &path);
 /**
- * \brief Return modified time in seconds of given path. 0 will be returned upon
- * error.
+ * \brief Return modified time in seconds of given path.
  *
- * \since 5.0.10
+ * When error, it will return the time equal to std::chrono::system_clock::
+ * time_point::min().
+ *
+ * \param path the path to check
+ *
+ * \since 5.1.13
  */
-FCITXUTILS_EXPORT int64_t modifiedTime(const std::string &path);
+FCITXUTILS_EXPORT int64_t modifiedTime(const std::filesystem::path &path);
 
 /**
  * \brief open the unix fd with fdopen.
@@ -84,8 +92,8 @@ FCITXUTILS_EXPORT UniqueFilePtr openFD(UnixFD &fd, const char *modes);
  * \see openUnixFD
  * \since 5.0.16
  */
-FCITXUTILS_EXPORT UniqueFilePtr openFD(StandardPathFile &file,
-                                       const char *modes);
+FCITXUTILS_DEPRECATED_EXPORT UniqueFilePtr openFD(StandardPathFile &file,
+                                                  const char *modes);
 } // namespace fs
 } // namespace fcitx
 

@@ -6,17 +6,51 @@
  */
 #include "icontheme.h"
 #include <fcntl.h>
-#include <sys/mman.h>
 #include <sys/stat.h>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
+#include <functional>
+#include <ios>
 #include <limits>
+#include <memory>
 #include <stdexcept>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <tuple>
 #include <unordered_set>
+#include <utility>
+#include <variant>
+#include <vector>
+#include <ranges>
 #include "fcitx-config/iniparser.h"
 #include "fcitx-config/marshallfunction.h"
+#include "fcitx-config/rawconfig.h"
+#include "fcitx-utils/environ.h"
 #include "fcitx-utils/fs.h"
-#include "fcitx-utils/mtime_p.h"
+#include "fcitx-utils/i18nstring.h"
+#include "fcitx-utils/macros.h"
+#include "fcitx-utils/standardpath.h"
+#include "fcitx-utils/standardpaths.h"
+#include "fcitx-utils/stringutils.h"
+#include "config.h" // IWYU pragma: keep
 #include "misc_p.h"
+
+#ifdef HAVE_SYS_MMAN_H
+#include <sys/mman.h>
+#endif
+
+namespace {
+
+// helper type for the visitor
+template <class... Ts>
+struct VariantOverload : Ts... {
+    using Ts::operator()...;
+};
+} // namespace
 
 namespace fcitx {
 
@@ -64,7 +98,7 @@ public:
         }
 
         if (auto subConfig = config.get("Scale")) {
-            unmarshallOption(size_, *subConfig, false);
+            unmarshallOption(scale_, *subConfig, false);
         }
         if (auto subConfig = config.get("Context")) {
             unmarshallOption(context_, *subConfig, false);
@@ -128,21 +162,21 @@ bool IconThemeDirectory::matchesSize(int iconsize, int iconscale) const {
 int IconThemeDirectory::sizeDistance(int iconsize, int iconscale) const {
     switch (type()) {
     case IconThemeDirectoryType::Fixed:
-        return std::abs(size() * scale() - iconsize * iconscale);
+        return std::abs((size() * scale()) - (iconsize * iconscale));
     case IconThemeDirectoryType::Scalable:
         if (iconsize * iconscale < minSize() * scale()) {
-            return minSize() * scale() - iconsize * iconscale;
+            return (minSize() * scale()) - (iconsize * iconscale);
         }
         if (iconsize * iconscale > maxSize() * scale()) {
-            return iconsize * iconscale - maxSize() * scale();
+            return (iconsize * iconscale) - (maxSize() * scale());
         }
         return 0;
     case IconThemeDirectoryType::Threshold:
         if (iconsize * iconscale < (size() - threshold()) * scale()) {
-            return (size() - threshold()) * scale() - iconsize * iconscale;
+            return ((size() - threshold()) * scale()) - (iconsize * iconscale);
         }
         if (iconsize * iconscale > (size() + threshold()) * scale()) {
-            return iconsize * iconscale - (size() - threshold()) * scale();
+            return (iconsize * iconscale) - ((size() - threshold()) * scale());
         }
     }
     return 0;
@@ -159,13 +193,6 @@ FCITX_DEFINE_READ_ONLY_PROPERTY_PRIVATE(IconThemeDirectory, int, maxSize);
 FCITX_DEFINE_READ_ONLY_PROPERTY_PRIVATE(IconThemeDirectory, int, minSize);
 FCITX_DEFINE_READ_ONLY_PROPERTY_PRIVATE(IconThemeDirectory, int, threshold);
 
-bool timespecLess(const Timespec &lhs, const Timespec &rhs) {
-    if (lhs.sec != rhs.sec) {
-        return lhs.sec < rhs.sec;
-    }
-    return lhs.nsec < rhs.nsec;
-}
-
 static uint32_t iconNameHash(const char *p) {
     uint32_t h = static_cast<signed char>(*p);
     for (p += 1; *p != '\0'; p++) {
@@ -176,21 +203,29 @@ static uint32_t iconNameHash(const char *p) {
 
 class IconThemeCache {
 public:
-    IconThemeCache(const std::string &filename) {
-        auto fd = UnixFD::own(open(filename.c_str(), O_RDONLY));
+    IconThemeCache(const std::filesystem::path &filename) {
+#ifdef _WIN32
+        FCITX_UNUSED(filename);
+#else
+        auto fd = StandardPaths::openPath(filename);
         if (!fd.isValid()) {
             return;
         }
+        auto fileModifiedTime = fs::modifiedTime(filename);
+        if (fileModifiedTime == 0) {
+            return;
+        }
+        auto dirName = filename.parent_path();
+        auto dirModifiedTime = fs::modifiedTime(dirName);
+        if (dirModifiedTime == 0) {
+            return;
+        }
+        if (fileModifiedTime < dirModifiedTime) {
+            return;
+        }
+
         struct stat st;
-        if (fstat(fd.fd(), &st) != 0) {
-            return;
-        }
-        struct stat dirSt;
-        auto dirName = fs::dirName(filename);
-        if (stat(dirName.c_str(), &dirSt) != 0) {
-            return;
-        }
-        if (timespecLess(modifiedTime(st), modifiedTime(dirSt))) {
+        if (fstat(fd.fd(), &st) < 0) {
             return;
         }
 
@@ -217,23 +252,28 @@ public:
             return;
         }
         for (uint32_t i = 0; i < dirListLen; ++i) {
-            uint32_t offset = readDoubleWord(dirListOffset + 4 + 4 * i);
+            uint32_t offset = readDoubleWord(dirListOffset + 4 + (4 * i));
             if (!isValid_ || offset >= size_) {
                 isValid_ = false;
                 return;
             }
-            struct stat subDirSt;
             auto *dir = checkString(offset);
-            if (!dir || stat(stringutils::joinPath(dirName, dir).c_str(),
-                             &subDirSt) != 0) {
+            if (!dir) {
                 isValid_ = false;
                 return;
             }
-            if (timespecLess(modifiedTime(st), modifiedTime(subDirSt))) {
+            std::filesystem::path subdirName(dir);
+            if (subdirName.is_absolute()) {
+                isValid_ = false;
+                return;
+            }
+            auto subDirTime = fs::modifiedTime(dirName / subdirName);
+            if (fileModifiedTime < subDirTime) {
                 isValid_ = false;
                 return;
             }
         }
+#endif
     }
 
     IconThemeCache() = default;
@@ -254,9 +294,11 @@ public:
     bool isValid() const { return isValid_; }
 
     ~IconThemeCache() {
+#ifndef _WIN32
         if (memory_) {
             munmap(memory_, size_);
         }
+#endif
     }
 
     uint16_t readWord(uint32_t offset) const {
@@ -310,7 +352,7 @@ IconThemeCache::lookup(const std::string &name) const {
     }
 
     uint32_t bucketIndex = hash % hashBucketCount;
-    uint32_t bucketOffset = readDoubleWord(hashOffset + 4 + bucketIndex * 4);
+    uint32_t bucketOffset = readDoubleWord(hashOffset + 4 + (bucketIndex * 4));
     while (bucketOffset > 0 && bucketOffset <= size_ - 12) {
         uint32_t nameOff = readDoubleWord(bucketOffset + 4);
         auto *namePtr = checkString(nameOff);
@@ -328,8 +370,8 @@ IconThemeCache::lookup(const std::string &name) const {
 
             ret.reserve(listLen);
             for (uint32_t j = 0; j < listLen && isValid_; ++j) {
-                uint32_t dirIndex = readWord(listOffset + 4 + 8 * j);
-                uint32_t o = readDoubleWord(dirListOffset + 4 + dirIndex * 4);
+                uint32_t dirIndex = readWord(listOffset + 4 + (8 * j));
+                uint32_t o = readDoubleWord(dirListOffset + 4 + (dirIndex * 4));
                 if (!isValid_ || dirIndex >= dirListLen || o >= size_) {
                     isValid_ = false;
                     return ret;
@@ -350,10 +392,15 @@ IconThemeCache::lookup(const std::string &name) const {
 class IconThemePrivate : QPtrHolder<IconTheme> {
 public:
     IconThemePrivate(IconTheme *q, const StandardPath &path)
+        : QPtrHolder(q), standardPath_(std::cref(path)) {
+        if (auto home = getEnvironment("HOME")) {
+            home_ = *home;
+        }
+    }
+    IconThemePrivate(IconTheme *q, const StandardPaths &path)
         : QPtrHolder(q), standardPath_(path) {
-        const char *home = getenv("HOME");
-        if (home) {
-            home_ = home;
+        if (auto home = getEnvironment("HOME")) {
+            home_ = *home;
         }
     }
 
@@ -417,7 +464,7 @@ public:
         }
 
         // Always inherit hicolor.
-        if (!parent && !subThemeNames_.count("hicolor")) {
+        if (!parent && !subThemeNames_.contains("hicolor")) {
             addInherit("hicolor");
         }
     }
@@ -425,20 +472,31 @@ public:
     void addInherit(const std::string &inherit) {
         if (subThemeNames_.insert(inherit).second) {
             try {
-                inherits_.push_back(IconTheme(inherit, q_ptr, standardPath_));
+                std::visit(VariantOverload{
+                               [&](const StandardPath &path) {
+                                   inherits_.push_back(
+                                       IconTheme(inherit, q_ptr, path));
+                               },
+                               [&](const StandardPaths &path) {
+                                   inherits_.push_back(
+                                       IconTheme(inherit, q_ptr, path));
+                               },
+                           },
+                           standardPath_);
             } catch (...) {
             }
         }
     }
 
-    std::string findIcon(const std::string &icon, int size, int scale,
-                         const std::vector<std::string> &extensions) const {
+    std::filesystem::path
+    findIcon(const std::string &icon, int size, int scale,
+             const std::vector<std::string> &extensions) const {
         // Respect absolute path.
         if (icon.empty() || icon[0] == '/') {
             return icon;
         }
 
-        std::string filename;
+        std::filesystem::path filename;
         // If we're a empty theme, only look at fallback icon.
         if (!internalName_.empty()) {
             auto filename = findIconHelper(icon, size, scale, extensions);
@@ -460,7 +518,7 @@ public:
         return filename;
     }
 
-    std::string
+    std::filesystem::path
     findIconHelper(const std::string &icon, int size, int scale,
                    const std::vector<std::string> &extensions) const {
         auto filename = lookupIcon(icon, size, scale, extensions);
@@ -478,21 +536,24 @@ public:
         return {};
     }
 
-    std::string lookupIcon(const std::string &iconname, int size, int scale,
-                           const std::vector<std::string> &extensions) const {
+    std::filesystem::path
+    lookupIcon(const std::string &iconname, int size, int scale,
+               const std::vector<std::string> &extensions) const {
 
-        auto checkDirectory = [&extensions,
-                               &iconname](const IconThemeDirectory &directory,
-                                          std::string baseDir) -> std::string {
-            baseDir = stringutils::joinPath(baseDir, directory.path());
-            if (!fs::isdir(baseDir)) {
+        auto checkDirectory =
+            [&extensions, &iconname](
+                const IconThemeDirectory &directory,
+                std::filesystem::path baseDir) -> std::filesystem::path {
+            baseDir = baseDir / directory.path();
+            std::error_code ec;
+            if (!std::filesystem::is_directory(baseDir, ec)) {
                 return {};
             }
 
             for (const auto &ext : extensions) {
-                auto defaultPath = stringutils::joinPath(baseDir, iconname);
-                defaultPath += ext;
-                if (fs::isreg(defaultPath)) {
+                auto defaultPath = baseDir / (iconname + ext);
+                std::error_code ec;
+                if (std::filesystem::is_regular_file(defaultPath, ec)) {
                     return defaultPath;
                 }
             }
@@ -507,7 +568,7 @@ public:
                 hasCache = true;
             }
             for (const auto &directory : directories_) {
-                if ((hasCache && !dirFilter.count(directory.path())) ||
+                if ((hasCache && !dirFilter.contains(directory.path())) ||
                     !directory.matchesSize(size, scale)) {
                     continue;
                 }
@@ -519,7 +580,7 @@ public:
 
             if (scale != 1) {
                 for (const auto &directory : scaledDirectories_) {
-                    if ((hasCache && !dirFilter.count(directory.path())) ||
+                    if ((hasCache && !dirFilter.contains(directory.path())) ||
                         !directory.matchesSize(size, scale)) {
                         continue;
                     }
@@ -532,7 +593,7 @@ public:
         }
 
         auto minSize = std::numeric_limits<int>::max();
-        std::string closestFilename;
+        std::filesystem::path closestFilename;
 
         for (const auto &baseDir : baseDirs_) {
             bool hasCache = false;
@@ -545,7 +606,7 @@ public:
             auto checkDirectoryWithSize =
                 [&checkDirectory, &closestFilename, &dirFilter, hasCache, size,
                  scale, &minSize, &baseDir](const IconThemeDirectory &dir) {
-                    if (hasCache && !dirFilter.count(dir.path())) {
+                    if (hasCache && !dirFilter.contains(dir.path())) {
                         return;
                     }
                     auto distance = dir.sizeDistance(size, scale);
@@ -572,18 +633,32 @@ public:
         return closestFilename;
     }
 
-    std::string
+    std::filesystem::path
     lookupFallbackIcon(const std::string &iconname,
                        const std::vector<std::string> &extensions) const {
-        auto defaultBasePath = stringutils::joinPath(home_, ".icons", iconname);
+        auto defaultBasePath = home_ / ".icons" / iconname;
         for (const auto &ext : extensions) {
-            auto path = defaultBasePath + ext;
-            if (fs::isreg(path)) {
+            auto path = defaultBasePath;
+            path += ext;
+            std::error_code ec;
+            if (std::filesystem::is_regular_file(path, ec)) {
                 return path;
             }
-            path = standardPath_.locate(
-                StandardPath::Type::Data,
-                stringutils::joinPath("icons", iconname + ext));
+            std::visit(
+                VariantOverload{
+                    [&](const StandardPath &sppath) {
+                        path = sppath.locate(
+                            StandardPath::Type::Data,
+                            (std::filesystem::path("icons") / (iconname + ext))
+                                .string());
+                    },
+                    [&](const StandardPaths &sppath) {
+                        path = sppath.locate(StandardPathsType::Data,
+                                             std::filesystem::path("icons") /
+                                                 (iconname + ext));
+                    },
+                },
+                standardPath_);
             if (!path.empty()) {
                 return path;
             }
@@ -591,42 +666,67 @@ public:
         return {};
     }
 
-    void addBaseDir(const std::string &path) {
-        if (!fs::isdir(path)) {
+    void addBaseDir(const std::filesystem::path &path) {
+        std::error_code ec;
+        if (!std::filesystem::is_directory(path, ec)) {
             return;
         }
-        baseDirs_.emplace_back(std::piecewise_construct,
-                               std::forward_as_tuple(path),
-                               std::forward_as_tuple(stringutils::joinPath(
-                                   path, "icon-theme.cache")));
+        baseDirs_.emplace_back(
+            std::piecewise_construct, std::forward_as_tuple(path),
+            std::forward_as_tuple(path / "icon-theme.cache"));
     }
 
     void prepare() {
         if (!home_.empty()) {
-            addBaseDir(stringutils::joinPath(home_, ".icons", internalName_));
+            addBaseDir(home_ / ".icons" / internalName_);
         }
-        if (auto userDir =
-                standardPath_.userDirectory(StandardPath::Type::Data);
+        if (auto userDir = std::visit(
+                VariantOverload{
+                    [&](const StandardPath &sppath) {
+                        return std::filesystem::path(
+                            sppath.userDirectory(StandardPath::Type::Data));
+                    },
+                    [&](const StandardPaths &sppath) {
+                        return sppath.userDirectory(StandardPathsType::Data);
+                    },
+                },
+                standardPath_);
             !userDir.empty()) {
-            addBaseDir(stringutils::joinPath(userDir, "icons", internalName_));
+            addBaseDir(userDir / "icons" / internalName_);
         }
 
-        for (auto &dataDir :
-             standardPath_.directories(StandardPath::Type::Data)) {
-            addBaseDir(stringutils::joinPath(dataDir, "icons", internalName_));
+        for (auto &dataDir : std::visit(
+                 VariantOverload{
+                     [&](const StandardPath &sppath) {
+                         auto paths =
+                             sppath.directories(StandardPath::Type::Data);
+                         return std::vector<std::filesystem::path>(
+                             paths.begin(), paths.end());
+                     },
+                     [&](const StandardPaths &sppath) {
+                         auto dirs =
+                             sppath.directories(StandardPathsType::Data);
+                         return std::vector<std::filesystem::path>{dirs.begin(),
+                                                                   dirs.end()};
+                     },
+                 },
+                 standardPath_)) {
+            addBaseDir(dataDir / "icons" / internalName_);
         }
     }
 
-    std::string home_;
+    std::filesystem::path home_;
     std::string internalName_;
-    const StandardPath &standardPath_;
+    std::variant<std::reference_wrapper<const StandardPath>,
+                 std::reference_wrapper<const StandardPaths>>
+        standardPath_;
     I18NString name_;
     I18NString comment_;
     std::vector<IconTheme> inherits_;
     std::vector<IconThemeDirectory> directories_;
     std::vector<IconThemeDirectory> scaledDirectories_;
     std::unordered_set<std::string> subThemeNames_;
-    std::vector<std::pair<std::string, IconThemeCache>> baseDirs_;
+    std::vector<std::pair<std::filesystem::path, IconThemeCache>> baseDirs_;
     // Not really useful for our usecase.
     // bool hidden_;
     std::string example_;
@@ -641,14 +741,15 @@ IconTheme::IconTheme(const std::string &name, IconTheme *parent,
     FCITX_D();
     auto files = standardPath.openAll(
         StandardPath::Type::Data,
-        stringutils::joinPath("icons", name, "index.theme"), O_RDONLY);
+        (std::filesystem::path("icons") / name / "index.theme").string(),
+        O_RDONLY);
 
     RawConfig config;
-    for (auto iter = files.rbegin(), end = files.rend(); iter != end; iter++) {
-        readFromIni(config, iter->fd());
+    for (auto &file : files | std::views::reverse) {
+        readFromIni(config, file.fd());
     }
-    auto path = stringutils::joinPath(d->home_, ".icons", name, "index.theme");
-    auto fd = UnixFD::own(open(path.c_str(), O_RDONLY));
+    auto path = d->home_ / ".icons" / name / "index.theme";
+    auto fd = StandardPaths::openPath(path);
     if (fd.fd() >= 0) {
         readFromIni(config, fd.fd());
     }
@@ -659,6 +760,35 @@ IconTheme::IconTheme(const std::string &name, IconTheme *parent,
 }
 
 IconTheme::IconTheme(const StandardPath &standardPath)
+    : d_ptr(std::make_unique<IconThemePrivate>(this, standardPath)) {}
+
+IconTheme::IconTheme(const std::string &name, const StandardPaths &standardPath)
+    : IconTheme(name, nullptr, standardPath) {}
+
+IconTheme::IconTheme(const std::string &name, IconTheme *parent,
+                     const StandardPaths &standardPath)
+    : IconTheme(standardPath) {
+    FCITX_D();
+    auto files = standardPath.openAll(StandardPathsType::Data,
+                                      std::filesystem::path("icons") / name /
+                                          "index.theme");
+
+    RawConfig config;
+    for (auto &file : files | std::views::reverse) {
+        readFromIni(config, file.fd());
+    }
+    auto path = d->home_ / ".icons" / name / "index.theme";
+    auto fd = StandardPaths::openPath(path);
+    if (fd.isValid()) {
+        readFromIni(config, fd.fd());
+    }
+
+    d->parse(config, parent);
+    d->internalName_ = name;
+    d->prepare();
+}
+
+IconTheme::IconTheme(const StandardPaths &standardPath)
     : d_ptr(std::make_unique<IconThemePrivate>(this, standardPath)) {}
 
 FCITX_DEFINE_DEFAULT_DTOR_AND_MOVE(IconTheme);
@@ -679,14 +809,22 @@ FCITX_DEFINE_READ_ONLY_PROPERTY_PRIVATE(IconTheme, std::string, example);
 std::string IconTheme::findIcon(const std::string &iconName,
                                 unsigned int desiredSize, int scale,
                                 const std::vector<std::string> &extensions) {
-    return std::as_const(*this).findIcon(iconName, desiredSize, scale,
-                                         extensions);
+    return std::as_const(*this)
+        .findIconPath(iconName, desiredSize, scale, extensions)
+        .string();
 }
 
 std::string
 IconTheme::findIcon(const std::string &iconName, unsigned int desiredSize,
                     int scale,
                     const std::vector<std::string> &extensions) const {
+    return findIconPath(iconName, desiredSize, scale, extensions).string();
+}
+
+std::filesystem::path
+IconTheme::findIconPath(const std::string &iconName, unsigned int desiredSize,
+                        int scale,
+                        const std::vector<std::string> &extensions) const {
     FCITX_D();
     return d->findIcon(iconName, desiredSize, scale, extensions);
 }
@@ -705,7 +843,7 @@ std::string getKdeTheme(int fd) {
     return "";
 }
 
-std::string getGtkTheme(const std::string &filename) {
+std::string getGtkTheme(const std::filesystem::path &filename) {
     // Evil Gtk2 use an non standard "ini-like" rc file.
     // Grep it and try to find the line we want ourselves.
     std::ifstream fin(filename, std::ios::in | std::ios::binary);
@@ -730,9 +868,10 @@ std::string getGtkTheme(const std::string &filename) {
 std::string IconTheme::defaultIconThemeName() {
     DesktopType desktopType = getDesktopType();
     switch (desktopType) {
+    case DesktopType::KDE6:
     case DesktopType::KDE5: {
-        auto files = StandardPath::global().openAll(StandardPath::Type::Config,
-                                                    "kdeglobals", O_RDONLY);
+        auto files = StandardPaths::global().openAll(StandardPathsType::Config,
+                                                     "kdeglobals");
         for (auto &file : files) {
             auto theme = getKdeTheme(file.fd());
             if (!theme.empty()) {
@@ -743,14 +882,14 @@ std::string IconTheme::defaultIconThemeName() {
         return "breeze";
     }
     case DesktopType::KDE4: {
-        const char *home = getenv("HOME");
-        if (home && home[0]) {
-            std::string files[] = {
-                stringutils::joinPath(home, ".kde4/share/config/kdeglobals"),
-                stringutils::joinPath(home, ".kde/share/config/kdeglobals"),
+        auto home = getEnvironment("HOME");
+        if (home && !home->empty()) {
+            std::vector<std::filesystem::path> files = {
+                std::filesystem::path(*home) / ".kde4/share/config/kdeglobals",
+                std::filesystem::path(*home) / ".kde/share/config/kdeglobals",
                 "/etc/kde4/kdeglobals"};
             for (auto &file : files) {
-                auto fd = UnixFD::own(open(file.c_str(), O_RDONLY));
+                auto fd = StandardPaths::openPath(file);
                 auto theme = getKdeTheme(fd.fd());
                 if (!theme.empty()) {
                     return theme;
@@ -760,8 +899,8 @@ std::string IconTheme::defaultIconThemeName() {
         return "oxygen";
     }
     default: {
-        auto files = StandardPath::global().locateAll(
-            StandardPath::Type::Config, "gtk-3.0/settings.ini");
+        auto files = StandardPaths::global().locateAll(
+            StandardPathsType::Config, "gtk-3.0/settings.ini");
         for (auto &file : files) {
             auto theme = getGtkTheme(file);
             if (!theme.empty()) {
@@ -772,11 +911,11 @@ std::string IconTheme::defaultIconThemeName() {
         if (!theme.empty()) {
             return theme;
         }
-        const char *home = getenv("HOME");
-        if (home && home[0]) {
-            std::string homeStr(home);
-            std::string files[] = {stringutils::joinPath(homeStr, ".gtkrc-2.0"),
-                                   "/etc/gtk-2.0/gtkrc"};
+        auto home = getEnvironment("HOME");
+        if (home && !home->empty()) {
+            std::vector<std::filesystem::path> files = {
+                std::filesystem::path(*home) / ".gtkrc-2.0",
+                "/etc/gtk-2.0/gtkrc"};
             for (auto &file : files) {
                 auto theme = getGtkTheme(file);
                 if (!theme.empty()) {
@@ -789,7 +928,8 @@ std::string IconTheme::defaultIconThemeName() {
 
     if (desktopType == DesktopType::Unknown) {
         return "Tango";
-    } else if (desktopType == DesktopType::GNOME) {
+    }
+    if (desktopType == DesktopType::GNOME) {
         return "Adwaita";
     }
     return "gnome";

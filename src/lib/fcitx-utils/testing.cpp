@@ -5,8 +5,15 @@
  *
  */
 #include "testing.h"
-#include <cstdlib>
-#include "standardpath.h"
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <vector>
+#include <ranges>
+#include "environ.h"
+#include "standardpaths.h"
+#include "standardpaths_p.h"
 #include "stringutils.h"
 
 namespace fcitx {
@@ -14,46 +21,86 @@ namespace fcitx {
 void setupTestingEnvironment(const std::string &testBinaryDir,
                              const std::vector<std::string> &addonDirs,
                              const std::vector<std::string> &dataDirs) {
-    // Skip resolution with fcitxPath
-    setenv("SKIP_FCITX_PATH", "1", 1);
-    setenv("SKIP_FCITX_USER_PATH", "1", 1);
+    std::vector<std::filesystem::path> addonDirsPath;
+    addonDirsPath.assign(addonDirs.begin(), addonDirs.end());
+    std::vector<std::filesystem::path> dataDirsPath;
+    dataDirsPath.assign(dataDirs.begin(), dataDirs.end());
+    setupTestingEnvironmentPath(std::filesystem::path(testBinaryDir),
+                                addonDirsPath, dataDirsPath);
+}
+
+void setupTestingEnvironmentPath(
+    const std::filesystem::path &testBinaryDir,
+    const std::vector<std::filesystem::path> &addonDirs,
+    const std::vector<std::filesystem::path> &dataDirs) {
+
     // Path to addon library
-    std::vector<std::string> fullAddonDirs;
+    std::vector<std::filesystem::path> fullAddonDirs;
     for (const auto &addonDir : addonDirs) {
         if (addonDir.empty()) {
             continue;
         }
-        if (addonDir[0] == '/') {
+        if (addonDir.is_absolute()) {
             fullAddonDirs.push_back(addonDir);
         } else {
-            fullAddonDirs.push_back(
-                stringutils::joinPath(testBinaryDir, addonDir));
+            fullAddonDirs.push_back(testBinaryDir / addonDir);
         }
     }
-    fullAddonDirs.push_back(StandardPath::fcitxPath("addondir"));
-
-    setenv("FCITX_ADDON_DIRS", stringutils::join(fullAddonDirs, ":").data(), 1);
-    // Make sure we don't write to user data.
-    setenv("FCITX_DATA_HOME", "/Invalid/Path", 1);
-    // Make sure we don't write to user data.
-    setenv("FCITX_CONFIG_HOME", "/Invalid/Path", 1);
+    // Add built-in path for testing addons.
+    fullAddonDirs.push_back(StandardPaths::fcitxPath("addondir"));
     // Make sure we can find addon files.
     // Path to addon library
-    std::vector<std::string> fullDataDirs;
+    std::vector<std::filesystem::path> fullDataDirs;
     for (const auto &dataDir : dataDirs) {
         if (dataDir.empty()) {
             continue;
         }
-        if (dataDir[0] == '/') {
+        if (dataDir.is_absolute()) {
             fullDataDirs.push_back(dataDir);
         } else {
-            fullDataDirs.push_back(
-                stringutils::joinPath(testBinaryDir, dataDir));
+            fullDataDirs.push_back(testBinaryDir / dataDir);
         }
     }
     // Include the three testing only addons.
-    fullDataDirs.push_back(StandardPath::fcitxPath("pkgdatadir", "testing"));
-    setenv("FCITX_DATA_DIRS", stringutils::join(fullDataDirs, ":").data(), 1);
+    fullDataDirs.push_back(StandardPaths::fcitxPath("pkgdatadir", "testing"));
+
+#ifndef _WIN32
+    // Skip resolution with fcitxPath
+    setEnvironment("SKIP_FCITX_PATH", "1");
+    setEnvironment("SKIP_FCITX_USER_PATH", "1");
+
+    setEnvironment(
+        "FCITX_ADDON_DIRS",
+        stringutils::join(fullAddonDirs |
+                              std::views::transform([](const auto &path) {
+                                  return path.string();
+                              }),
+                          ":")
+            .data());
+    // Make sure we don't write to user data.
+    setEnvironment("FCITX_DATA_HOME", "/Invalid/Path");
+    // Make sure we don't write to user data.
+    setEnvironment("FCITX_CONFIG_HOME", "/Invalid/Path");
+    setEnvironment(
+        "FCITX_DATA_DIRS",
+        stringutils::join(fullDataDirs |
+                              std::views::transform([](const auto &path) {
+                                  return path.string();
+                              }),
+                          ":")
+            .data());
+#endif
+
+    StandardPathsPrivate::setGlobal(std::make_unique<StandardPaths>(
+        "fcitx5",
+        std::unordered_map<std::string, std::vector<std::filesystem::path>>{
+            {"pkgdatadir", fullDataDirs},
+            {"addondir", fullAddonDirs},
+        },
+        StandardPathsOptions{
+            StandardPathsOption::SkipUserPath,
+            StandardPathsOption::SkipSystemPath,
+        }));
 }
 
 } // namespace fcitx

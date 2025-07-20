@@ -4,29 +4,47 @@
  * SPDX-License-Identifier: LGPL-2.1-or-later
  *
  */
+
+#include "xcbkeyboard.h"
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <iterator>
+#include <string>
+#include <system_error>
+#include <utility>
+#include <vector>
+#include <xcb/xcb.h>
+#include <xcb/xcbext.h>
+#include <xcb/xproto.h>
+#include <xkbcommon/xkbcommon-x11.h>
+#include <xkbcommon/xkbcommon.h>
+#include "fcitx-utils/environ.h"
+#include "fcitx-utils/event.h"
+#include "fcitx-utils/eventloopinterface.h"
+#include "fcitx-utils/key.h"
+#include "fcitx-utils/log.h"
+#include "fcitx-utils/misc.h"
+#include "fcitx-utils/stringutils.h"
+#include "fcitx/addonmanager.h"
+#include "fcitx/event.h"
+#include "fcitx/inputmethodmanager.h"
+#include "fcitx/instance.h"
+#include "fcitx/misc_p.h"
 #include "config.h"
+#include "xcb_public.h"
+#include "xcbconnection.h"
+#include "xcbmodule.h"
 
 // workaround xkb.h using explicit keyword problem
 #define explicit no_cxx_explicit
 #include <xcb/xkb.h>
 #undef explicit
 
-#include <xcb/xcbext.h>
-#include <xkbcommon/xkbcommon-x11.h>
-#include "fcitx-utils/log.h"
-#include "fcitx-utils/stringutils.h"
-#include "fcitx/addonmanager.h"
-#include "fcitx/inputmethodmanager.h"
-#include "fcitx/misc_p.h"
-
 #ifdef ENABLE_DBUS
 #include "dbus_public.h"
 #endif
-
-#include "xcb_public.h"
-#include "xcbconnection.h"
-#include "xcbkeyboard.h"
-#include "xcbmodule.h"
 
 // Hack the files so we don't need to include libx11 files.
 
@@ -55,15 +73,16 @@ namespace fcitx {
 namespace {
 
 std::string xmodmapFile() {
-    auto *home = getenv("HOME");
+    auto home = getEnvironment("HOME");
     if (!home) {
         return {};
     }
-    auto path = stringutils::joinPath(home, ".Xmodmap");
-    if (!fs::isreg(path)) {
-        path = stringutils::joinPath(home, ".xmodmap");
+    auto path = std::filesystem::path(*home) / ".Xmodmap";
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec)) {
+        path = std::filesystem::path(*home) / ".xmodmap";
     }
-    if (!fs::isreg(path)) {
+    if (!std::filesystem::is_regular_file(path)) {
         return {};
     }
     return path;
@@ -250,7 +269,8 @@ XkbRulesNames XCBKeyboard::xkbRulesNames() {
 
     XkbRulesNames names;
     if (length) {
-        auto p = data, end = data + length;
+        auto *p = data;
+        auto *end = data + length;
         int i = 0;
         // The result from xcb_get_property_value() is not necessarily
         // \0-terminated,
@@ -363,13 +383,13 @@ void XCBKeyboard::setRMLVOToServer(const std::string &rule,
     // xcb_xkb_get_kbd_by_name() doesn't fill the buffer for us, need to it
     // ourselves.
     char locale[] = "C";
-    std::string ruleFile;
+    std::filesystem::path ruleFile;
     XkbRF_RulesPtr rules = nullptr;
     if (!rule.empty()) {
         if (rule[0] != '/') {
             ruleFile =
-                stringutils::joinPath(XKEYBOARDCONFIG_XKBBASE, "rules", rule);
-            rules = XkbRF_Load(ruleFile.data(), locale, true, true);
+                std::filesystem::path(XKEYBOARDCONFIG_XKBBASE) / "rules" / rule;
+            rules = XkbRF_Load(ruleFile.string().data(), locale, true, true);
         }
     }
     if (!rules) {
@@ -393,7 +413,12 @@ void XCBKeyboard::setRMLVOToServer(const std::string &rule,
     rdefs.options = !options.empty() ? strdup(options.data()) : nullptr;
     XkbRF_GetComponents(rules, &rdefs, &rnames);
 
-    int keymapLen, keycodesLen, typesLen, compatLen, symbolsLen, geometryLen;
+    int keymapLen;
+    int keycodesLen;
+    int typesLen;
+    int compatLen;
+    int symbolsLen;
+    int geometryLen;
     keymapLen = keycodesLen = typesLen = compatLen = symbolsLen = geometryLen =
         0;
 #define SET_LENGTH(FIELD)                                                      \
@@ -600,6 +625,8 @@ bool XCBKeyboard::handleEvent(xcb_generic_event_t *event) {
             }
             break;
         }
+        default:
+            break;
         }
     }
     return true;

@@ -12,12 +12,14 @@
 /// \file
 /// \brief Class to handler dynamic library.
 
+#include <cstddef>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <string>
+#include <fcitx-utils/fcitxutils_export.h>
 #include <fcitx-utils/flags.h>
 #include <fcitx-utils/macros.h>
-#include "fcitxutils_export.h"
 
 namespace fcitx {
 
@@ -34,7 +36,9 @@ class LibraryPrivate;
 
 class FCITXUTILS_EXPORT Library {
 public:
-    Library(const std::string &path = {});
+    explicit Library(const std::string &path);
+    explicit Library(const char *path);
+    explicit Library(const std::filesystem::path &path = {});
     FCITX_DECLARE_VIRTUAL_DTOR_MOVE(Library);
 
     bool loaded() const;
@@ -45,6 +49,7 @@ public:
                   const std::function<void(const char *data)> &parser);
     std::string error();
     const std::string &path() const;
+    const std::filesystem::path &fspath() const;
 
     template <typename Func>
     static auto toFunction(void *ptr) {

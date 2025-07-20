@@ -26,11 +26,12 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <fcitx-utils/fcitxutils_export.h>
 #include <fcitx-utils/log.h>
 #include <fcitx-utils/macros.h>
+#include <fcitx-utils/standardpaths.h>
 #include <fcitx-utils/stringutils.h>
 #include <fcitx-utils/unixfd.h>
-#include "fcitxutils_export.h"
 
 namespace fcitx {
 
@@ -89,7 +90,7 @@ NotFilter<T> Not(T t) {
 }
 
 /// \brief Filter class that filters based on user file.
-struct FCITXUTILS_EXPORT User {
+struct FCITXUTILS_DEPRECATED_EXPORT User {
     bool operator()(const std::string & /*unused*/,
                     const std::string & /*unused*/, bool isUser) {
         return isUser;
@@ -97,7 +98,7 @@ struct FCITXUTILS_EXPORT User {
 };
 
 /// \brief Filter class that filters file based on prefix
-struct FCITXUTILS_EXPORT Prefix {
+struct FCITXUTILS_DEPRECATED_EXPORT Prefix {
     Prefix(const std::string &prefix_) : prefix(prefix_) {}
 
     bool operator()(const std::string &path, const std::string & /*unused*/,
@@ -109,7 +110,7 @@ struct FCITXUTILS_EXPORT Prefix {
 };
 
 /// \brief Filter class that filters file based on suffix
-struct FCITXUTILS_EXPORT Suffix {
+struct FCITXUTILS_DEPRECATED_EXPORT Suffix {
     Suffix(const std::string &suffix_) : suffix(suffix_) {}
 
     bool operator()(const std::string &path, const std::string & /*unused*/,
@@ -123,7 +124,7 @@ struct FCITXUTILS_EXPORT Suffix {
 
 /// \brief File descriptor wrapper that handles file descriptor and rename
 /// automatically.
-class FCITXUTILS_EXPORT StandardPathTempFile {
+class FCITXUTILS_DEPRECATED_EXPORT StandardPathTempFile {
 public:
     StandardPathTempFile(int fd = -1, const std::string &realFile = {},
                          const std::string &tempPath = {})
@@ -149,7 +150,7 @@ private:
 
 /// \brief Utility class that wraps around UnixFD. It also contains the actual
 /// file name information.
-class FCITXUTILS_EXPORT StandardPathFile {
+class FCITXUTILS_DEPRECATED_EXPORT StandardPathFile {
 public:
     StandardPathFile(int fd = -1, const std::string &path = {})
         : fd_(UnixFD::own(fd)), path_(path) {}
@@ -177,7 +178,7 @@ using StandardPathFilesMap =
     std::map<std::string, std::vector<StandardPathFile>>;
 
 /// \brief Utility class to open, locate, list files based on XDG standard.
-class FCITXUTILS_EXPORT StandardPath {
+class FCITXUTILS_DEPRECATED_EXPORT StandardPath {
 public:
     /// \brief Enum for location type.
     enum class Type {
@@ -206,13 +207,13 @@ public:
      * @param skipUserPath skip user path, useful when doing readonly-test.
      * @since 5.1.9
      */
-    StandardPath(
+    explicit StandardPath(
         const std::string &packageName,
         const std::unordered_map<std::string, std::string> &builtInPath,
         bool skipBuiltInPath, bool skipUserPath);
 
-    StandardPath(bool skipFcitxPath, bool skipUserPath);
-    StandardPath(bool skipFcitxPath = false);
+    explicit StandardPath(bool skipFcitxPath, bool skipUserPath);
+    explicit StandardPath(bool skipFcitxPath = false);
     virtual ~StandardPath();
 
     /// \brief Return the global instance of StandardPath.
@@ -431,6 +432,33 @@ static inline LogMessageBuilder &operator<<(LogMessageBuilder &builder,
             << ")";
     return builder;
 }
+
+template <>
+class StandardPathsTypeConverter<StandardPath::Type> {
+public:
+    using self_type = StandardPath::Type;
+
+    static constexpr StandardPathsType convert(StandardPath::Type type) {
+        switch (type) {
+        case StandardPath::Type::Config:
+            return StandardPathsType::Config;
+        case StandardPath::Type::PkgConfig:
+            return StandardPathsType::PkgConfig;
+        case StandardPath::Type::Data:
+            return StandardPathsType::Data;
+        case StandardPath::Type::Cache:
+            return StandardPathsType::Cache;
+        case StandardPath::Type::Runtime:
+            return StandardPathsType::Runtime;
+        case StandardPath::Type::Addon:
+            return StandardPathsType::Addon;
+        case StandardPath::Type::PkgData:
+            return StandardPathsType::PkgData;
+        default:
+            return StandardPathsType::Config;
+        }
+    }
+};
 
 } // namespace fcitx
 

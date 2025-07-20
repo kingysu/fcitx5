@@ -7,14 +7,17 @@
 #ifndef _FCITX_UTILS_ICONTHEME_H_
 #define _FCITX_UTILS_ICONTHEME_H_
 
+#include <filesystem>
 #include <memory>
+#include <string>
+#include <vector>
 #include <fcitx-config/enum.h>
 #include <fcitx-config/rawconfig.h>
 #include <fcitx-utils/i18nstring.h>
 #include <fcitx-utils/macros.h>
 #include <fcitx-utils/misc.h>
-#include <fcitx-utils/standardpath.h>
-#include "fcitxcore_export.h"
+#include <fcitx-utils/standardpaths.h>
+#include <fcitx/fcitxcore_export.h>
 
 /// \addtogroup FcitxCore
 /// \{
@@ -25,6 +28,7 @@ namespace fcitx {
 
 class IconThemeDirectoryPrivate;
 class IconThemePrivate;
+class StandardPath;
 
 FCITX_CONFIG_ENUM(IconThemeDirectoryType, Fixed, Scalable, Threshold);
 
@@ -55,23 +59,31 @@ class FCITXCORE_EXPORT IconTheme {
     friend class IconThemePrivate;
 
 public:
-    IconTheme(const char *name,
-              const StandardPath &standardPath = StandardPath::global())
+    IconTheme(const char *name, const StandardPath &standardPath)
         : IconTheme(std::string(name), standardPath) {}
+    IconTheme(const std::string &name, const StandardPath &standardPath);
+    IconTheme(const StandardPath &standardPath);
+
     IconTheme(const std::string &name,
-              const StandardPath &standardPath = StandardPath::global());
-    IconTheme(const StandardPath &standardPath = StandardPath::global());
+              const StandardPaths &standardPath = StandardPaths::global());
+    IconTheme(const StandardPaths &standardPath = StandardPaths::global());
     FCITX_DECLARE_VIRTUAL_DTOR_MOVE(IconTheme);
 
     // FIXME: remove non-const version when we can break ABI.
-    std::string findIcon(const std::string &iconName, unsigned int desiredSize,
-                         int scale = 1,
-                         const std::vector<std::string> &extensions = {
-                             ".svg", ".png", ".xpm"});
-    std::string findIcon(const std::string &iconName, unsigned int desiredSize,
-                         int scale = 1,
-                         const std::vector<std::string> &extensions = {
-                             ".svg", ".png", ".xpm"}) const;
+    FCITXCORE_DEPRECATED std::string findIcon(
+        const std::string &iconName, unsigned int desiredSize, int scale = 1,
+        const std::vector<std::string> &extensions = {".svg", ".png", ".xpm"});
+    FCITXCORE_DEPRECATED std::string
+    findIcon(const std::string &iconName, unsigned int desiredSize,
+             int scale = 1,
+             const std::vector<std::string> &extensions = {".svg", ".png",
+                                                           ".xpm"}) const;
+
+    std::filesystem::path
+    findIconPath(const std::string &iconName, unsigned int desiredSize,
+                 int scale = 1,
+                 const std::vector<std::string> &extensions = {".svg", ".png",
+                                                               ".xpm"}) const;
     static std::string defaultIconThemeName();
 
     FCITX_DECLARE_READ_ONLY_PROPERTY(std::string, internalName);
@@ -91,6 +103,8 @@ public:
 private:
     IconTheme(const std::string &name, IconTheme *parent,
               const StandardPath &standardPath);
+    IconTheme(const std::string &name, IconTheme *parent,
+              const StandardPaths &standardPath);
 
     std::unique_ptr<IconThemePrivate> d_ptr;
     FCITX_DECLARE_PRIVATE(IconTheme);

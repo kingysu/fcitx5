@@ -7,9 +7,10 @@
 #ifndef _FCITX_UTILS_TESTING_H_
 #define _FCITX_UTILS_TESTING_H_
 
+#include <filesystem>
 #include <string>
 #include <vector>
-#include "fcitxutils_export.h"
+#include <fcitx-utils/fcitxutils_export.h>
 
 /// \addtogroup FcitxUtils
 /// \{
@@ -54,6 +55,11 @@ FCITXUTILS_EXPORT void
 setupTestingEnvironment(const std::string &testBinaryDir,
                         const std::vector<std::string> &addonDirs,
                         const std::vector<std::string> &dataDirs);
+
+FCITXUTILS_EXPORT void
+setupTestingEnvironmentPath(const std::filesystem::path &testBinaryDir,
+                            const std::vector<std::filesystem::path> &addonDirs,
+                            const std::vector<std::filesystem::path> &dataDirs);
 
 } // namespace fcitx
 

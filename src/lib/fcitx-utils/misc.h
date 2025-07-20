@@ -8,14 +8,16 @@
 #define _FCITX_UTILS_MISC_H_
 
 #include <unistd.h>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <memory>
 #include <string>
-#include <utility>
+#include <type_traits>
 #include <vector>
+#include <fcitx-utils/fcitxutils_export.h>
 #include <fcitx-utils/macros.h>
-#include "fcitxutils_export.h"
 
 namespace fcitx {
 
@@ -130,8 +132,10 @@ inline auto makeUniqueCPtr(T *ptr) {
     return UniqueCPtr<T>(ptr);
 }
 
-FCITXUTILS_EXPORT ssize_t getline(UniqueCPtr<char> &lineptr, size_t *n,
-                                  std::FILE *stream);
+#ifndef _WIN32
+FCITXUTILS_DEPRECATED_EXPORT ssize_t getline(UniqueCPtr<char> &lineptr,
+                                             size_t *n, std::FILE *stream);
+#endif
 
 /**
  * Util function to check whether fcitx is running in flatpak.
@@ -148,7 +152,7 @@ FCITXUTILS_EXPORT bool isInFlatpak();
  *
  * @since 5.1.2
  */
-FCITXUTILS_EXPORT constexpr inline bool isAndroid() {
+constexpr bool isAndroid() {
 #if defined(ANDROID) || defined(__ANDROID__)
     return true;
 #else
@@ -161,8 +165,34 @@ FCITXUTILS_EXPORT constexpr inline bool isAndroid() {
  *
  * @since 5.1.7
  */
-FCITXUTILS_EXPORT constexpr inline bool isApple() {
+constexpr bool isApple() {
 #if defined(__APPLE__)
+    return true;
+#else
+    return false;
+#endif
+}
+
+/**
+ * Util function that returns whether it is compile against emscripten.
+ *
+ * @since 5.1.12
+ */
+constexpr bool isEmscripten() {
+#if defined(__EMSCRIPTEN__)
+    return true;
+#else
+    return false;
+#endif
+}
+
+/**
+ * Util function that returns whether it is compile against Windows.
+ *
+ * @since 5.1.13
+ */
+constexpr bool isWindows() {
+#if defined(_WIN32)
     return true;
 #else
     return false;

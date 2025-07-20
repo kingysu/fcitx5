@@ -5,8 +5,21 @@
  *
  */
 
+#include "addonloader.h"
+#include <exception>
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+#include "fcitx-utils/flags.h"
 #include "fcitx-utils/library.h"
 #include "fcitx-utils/log.h"
+#include "fcitx-utils/standardpaths.h"
+#include "fcitx-utils/stringutils.h"
+#include "addoninfo.h"
+#include "addoninstance.h"
 #include "addonloader_p.h"
 #include "config.h"
 
@@ -20,37 +33,57 @@ AddonInstance *SharedLibraryLoader::load(const AddonInfo &info,
                                          AddonManager *manager) {
     auto iter = registry_.find(info.uniqueName());
     if (iter == registry_.end()) {
-        std::string libname = info.library();
-        Flags<LibraryLoadHint> flag = LibraryLoadHint::DefaultHint;
-        if (stringutils::startsWith(libname, "export:")) {
-            libname = libname.substr(7);
-            flag |= LibraryLoadHint::ExportExternalSymbolsHint;
+        std::vector<std::string> libnames =
+            stringutils::split(info.library(), ";");
+
+        if (libnames.empty()) {
+            FCITX_ERROR() << "Failed to parse Library field: " << info.library()
+                          << " for addon " << info.uniqueName();
+            return nullptr;
         }
-        auto file = libname + FCITX_LIBRARY_SUFFIX;
-        auto libs = standardPath_.locateAll(StandardPath::Type::Addon, file);
-        if (libs.empty()) {
-            FCITX_ERROR() << "Could not locate library " << file
-                          << " for addon " << info.uniqueName() << ".";
-        }
-        for (const auto &libraryPath : libs) {
-            Library lib(libraryPath);
-            if (!lib.load(flag)) {
+
+        std::vector<Library> libraries;
+        for (std::string_view libname : libnames) {
+            Flags<LibraryLoadHint> flag = LibraryLoadHint::DefaultHint;
+            if (stringutils::consumePrefix(libname, "export:")) {
+                flag |= LibraryLoadHint::ExportExternalSymbolsHint;
+            }
+            const auto file =
+                stringutils::concat(libname, FCITX_LIBRARY_SUFFIX);
+            const auto libraryPaths = StandardPaths::global().locateAll(
+                StandardPathsType::Addon, file);
+            if (libraryPaths.empty()) {
+                FCITX_ERROR() << "Could not locate library " << file
+                              << " for addon " << info.uniqueName() << ".";
+            }
+            bool loaded = false;
+            for (const auto &libraryPath : libraryPaths) {
+                Library library(libraryPath);
+                if (library.load(flag)) {
+                    libraries.push_back(std::move(library));
+                    loaded = true;
+                    break;
+                }
                 FCITX_ERROR()
                     << "Failed to load library for addon " << info.uniqueName()
-                    << " on " << libraryPath << ". Error: " << lib.error();
-                continue;
+                    << " on " << libraryPath << ". Error: " << library.error();
             }
+            if (!loaded) {
+                break;
+            }
+        }
+
+        if (libraries.size() == libnames.size()) {
             try {
-                registry_.emplace(
-                    info.uniqueName(),
-                    std::make_unique<SharedLibraryFactory>(std::move(lib)));
+                registry_.emplace(info.uniqueName(),
+                                  std::make_unique<SharedLibraryFactory>(
+                                      info, std::move(libraries)));
             } catch (const std::exception &e) {
                 FCITX_ERROR() << "Failed to initialize addon factory for addon "
                               << info.uniqueName() << ". Error: " << e.what();
             }
-            break;
+            iter = registry_.find(info.uniqueName());
         }
-        iter = registry_.find(info.uniqueName());
     }
 
     if (iter == registry_.end()) {

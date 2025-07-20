@@ -7,15 +7,20 @@
 #ifndef _FCITX_CONFIG_OPTION_H_
 #define _FCITX_CONFIG_OPTION_H_
 
-#include "fcitxconfig_export.h"
-
 #include <limits>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <utility>
+#include <vector>
+#include <fcitx-config/fcitxconfig_export.h>
 #include <fcitx-config/marshallfunction.h>
 #include <fcitx-config/option_details.h> // IWYU pragma: export
 #include <fcitx-config/optiontypename.h>
 #include <fcitx-config/rawconfig.h>
+#include <fcitx-utils/flags.h>
+#include <fcitx-utils/key.h>
 
 namespace fcitx {
 
@@ -55,15 +60,15 @@ public:
 template <typename T>
 struct NoConstrain {
     using Type = T;
-    bool check(const T &) const { return true; }
-    void dumpDescription(RawConfig &) const {}
+    bool check(const T & /*unused*/) const { return true; }
+    void dumpDescription(RawConfig & /*unused*/) const {}
 };
 
 /// Default Annotation with no options.
 struct NoAnnotation {
     bool skipDescription() { return false; }
     bool skipSave() { return false; }
-    void dumpDescription(RawConfig &) const {}
+    void dumpDescription(RawConfig & /*unused*/) const {}
 };
 
 /// Annotation to display a tooltip in configtool.
@@ -130,7 +135,7 @@ struct EnumAnnotation {
 struct HideInDescription {
     bool skipDescription() { return true; }
     bool skipSave() { return false; }
-    void dumpDescription(RawConfig &) const {}
+    void dumpDescription(RawConfig & /*unused*/) const {}
 };
 
 template <typename Annotation>
@@ -276,6 +281,18 @@ private:
     value_type value_;
 };
 
+template <typename Constrain, typename Marshaller, typename Annotation,
+          typename T>
+struct OptionParameters {
+    Configuration *parent;
+    std::string path;
+    std::string description;
+    T defaultValue;
+    Constrain constrain{};
+    Marshaller marshaller{};
+    Annotation annotation{};
+};
+
 /**
  * Represent a Configuration option.
  *
@@ -287,6 +304,8 @@ class Option : public OptionBaseV3 {
 public:
     using value_type = T;
     using constrain_type = Constrain;
+    using OptionParametersType =
+        OptionParameters<Constrain, Marshaller, Annotation, T>;
 
     Option(Configuration *parent, std::string path, std::string description,
            const T &defaultValue = T(), Constrain constrain = Constrain(),
@@ -301,6 +320,12 @@ public:
                 "defaultValue doesn't satisfy constrain");
         }
     }
+
+    Option(OptionParametersType params)
+        : Option(params.parent, std::move(params.path),
+                 std::move(params.description), std::move(params.defaultValue),
+                 std::move(params.constrain), std::move(params.marshaller),
+                 std::move(params.annotation)) {}
 
     std::string typeString() const override { return OptionTypeName<T>::get(); }
 
@@ -416,9 +441,14 @@ template <typename T, typename Annotation>
 using OptionWithAnnotation =
     Option<T, NoConstrain<T>, DefaultMarshaller<T>, Annotation>;
 
+/// Shorthand if you want a option type with only custom annotation.
+template <typename Annotation>
+using KeyListOptionWithAnnotation =
+    Option<KeyList, ListConstrain<KeyConstrain>, DefaultMarshaller<KeyList>,
+           Annotation>;
+
 /// Shorthand for KeyList option with constrain.
-using KeyListOption = Option<KeyList, ListConstrain<KeyConstrain>,
-                             DefaultMarshaller<KeyList>, NoAnnotation>;
+using KeyListOption = KeyListOptionWithAnnotation<NoAnnotation>;
 
 /// Shorthand for create a key list constrain.
 static inline ListConstrain<KeyConstrain>
@@ -460,7 +490,7 @@ struct ConditionalHiddenHelper<true, SubConfigOption> {
     class HiddenSubConfigOption : public SubConfigOption {
     public:
         using SubConfigOption::SubConfigOption;
-        bool skipDescription() const { return true; }
+        bool skipDescription() const override { return true; }
     };
     using OptionType = HiddenSubConfigOption;
 };

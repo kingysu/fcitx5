@@ -7,55 +7,64 @@
 #include "iniparser.h"
 #include <fcntl.h>
 #include <cstdio>
+#include <filesystem>
 #include <functional>
+#include <istream>
+#include <ostream>
 #include <string>
 #include <string_view>
-#include "fcitx-config/rawconfig.h"
+#include "fcitx-utils/fdstreambuf.h"
 #include "fcitx-utils/fs.h"
 #include "fcitx-utils/macros.h"
-#include "fcitx-utils/misc.h"
-#include "fcitx-utils/standardpath.h"
+#include "fcitx-utils/standardpaths.h"
 #include "fcitx-utils/stringutils.h"
 #include "fcitx-utils/unixfd.h"
 #include "configuration.h"
+#include "rawconfig.h"
 
 namespace fcitx {
 
+void readFromIni(RawConfig &config, FILE *fin) {
+    if (!fin) {
+        return;
+    }
+    readFromIni(config, fileno(fin));
+}
+
+bool writeAsIni(const RawConfig &config, FILE *fout) {
+    if (!fout) {
+        return false;
+    }
+    return writeAsIni(config, fileno(fout));
+}
+
 void readFromIni(RawConfig &config, int fd) {
-    if (fd < 0) {
+    if (fd == -1) {
         return;
     }
-    // dup it
-    UnixFD unixFD(fd);
-    UniqueFilePtr fp = fs::openFD(unixFD, "rb");
-    if (!fp) {
-        return;
-    }
-    readFromIni(config, fp.get());
+    IFDStreamBuf buf(fd);
+    std::istream in(&buf);
+    readFromIni(config, in);
 }
 
 bool writeAsIni(const RawConfig &config, int fd) {
-    if (fd < 0) {
+    if (fd == -1) {
         return false;
     }
-    // dup it
-    UnixFD unixFD(fd);
-    UniqueFilePtr fp = fs::openFD(unixFD, "wb");
-    if (!fp) {
-        return false;
-    }
-    return writeAsIni(config, fp.get());
+    OFDStreamBuf buf(fd);
+    std::ostream fout(&buf);
+    return writeAsIni(config, fout);
 }
 
-void readFromIni(RawConfig &config, FILE *fin) {
+void readFromIni(RawConfig &config, std::istream &in) {
     std::string currentGroup;
 
-    UniqueCPtr<char> clineBuf;
-    size_t bufSize = 0;
-    unsigned int line = 0;
-    while (getline(clineBuf, &bufSize, fin) >= 0) {
-        line++;
-        std::string_view lineBuf = stringutils::trimView(clineBuf.get());
+    std::string line;
+
+    unsigned int lineNumber = 0;
+    while (std::getline(in, line)) {
+        lineNumber++;
+        std::string_view lineBuf = stringutils::trimView(line);
         if (lineBuf.empty() || lineBuf.front() == '#') {
             continue;
         }
@@ -63,9 +72,9 @@ void readFromIni(RawConfig &config, FILE *fin) {
         if (lineBuf.front() == '[' && lineBuf.back() == ']') {
             currentGroup = lineBuf.substr(1, lineBuf.size() - 2);
             config.visitItemsOnPath(
-                [line](RawConfig &config, const std::string &) {
+                [lineNumber](RawConfig &config, const std::string &) {
                     if (!config.lineNumber()) {
-                        config.setLineNumber(line);
+                        config.setLineNumber(lineNumber);
                     }
                 },
                 currentGroup);
@@ -90,15 +99,15 @@ void readFromIni(RawConfig &config, FILE *fin) {
                 subConfig = config.get(std::string(name), true);
             }
             subConfig->setValue(*value);
-            subConfig->setLineNumber(line);
+            subConfig->setLineNumber(lineNumber);
         }
     }
 }
 
-bool writeAsIni(const RawConfig &config, FILE *fout) {
+bool writeAsIni(const RawConfig &config, std::ostream &out) {
     std::function<bool(const RawConfig &, const std::string &path)> callback;
 
-    callback = [fout, &callback](const RawConfig &config,
+    callback = [&out, &callback](const RawConfig &config,
                                  const std::string &path) {
         if (config.hasSubItems()) {
             std::string values;
@@ -124,11 +133,11 @@ bool writeAsIni(const RawConfig &config, FILE *fout) {
                 "", false, path);
             if (!values.empty()) {
                 if (!path.empty()) {
-                    FCITX_RETURN_IF(fprintf(fout, "[%s]\n", path.c_str()) < 0,
-                                    false);
+                    out << "[" << path << "]\n";
+                    FCITX_RETURN_IF(!out, false);
                 }
-                FCITX_RETURN_IF(fprintf(fout, "%s\n", values.c_str()) < 0,
-                                false);
+                out << values << "\n";
+                FCITX_RETURN_IF(!out, false);
             }
         }
         config.visitSubItems(callback, "", false, path);
@@ -139,49 +148,50 @@ bool writeAsIni(const RawConfig &config, FILE *fout) {
 }
 
 void readAsIni(RawConfig &rawConfig, const std::string &path) {
-    return readAsIni(rawConfig, StandardPath::Type::PkgConfig, path);
+    readAsIni(rawConfig, StandardPathsType::PkgConfig, path);
 }
 
 void readAsIni(Configuration &configuration, const std::string &path) {
-    return readAsIni(configuration, StandardPath::Type::PkgConfig, path);
+    readAsIni(configuration, StandardPathsType::PkgConfig, path);
 }
 
-void readAsIni(RawConfig &rawConfig, StandardPath::Type type,
-               const std::string &path) {
-    const auto &standardPath = StandardPath::global();
-    auto file = standardPath.open(type, path, O_RDONLY);
+bool safeSaveAsIni(const RawConfig &config, const std::string &path) {
+    return safeSaveAsIni(config, StandardPathsType::PkgConfig, path);
+}
+
+bool safeSaveAsIni(const Configuration &configuration,
+                   const std::string &path) {
+    return safeSaveAsIni(configuration, StandardPathsType::PkgConfig, path);
+}
+
+void readAsIni(RawConfig &rawConfig, StandardPathsType type,
+               const std::filesystem::path &path) {
+    const auto &standardPath = StandardPaths::global();
+    auto file = standardPath.open(type, path);
     readFromIni(rawConfig, file.fd());
 }
 
-void readAsIni(Configuration &configuration, StandardPath::Type type,
-               const std::string &path) {
+void readAsIni(Configuration &configuration, StandardPathsType type,
+               const std::filesystem::path &path) {
     RawConfig config;
     readAsIni(config, type, path);
 
     configuration.load(config);
 }
 
-bool safeSaveAsIni(const RawConfig &config, const std::string &path) {
-    return safeSaveAsIni(config, StandardPath::Type::PkgConfig, path);
-}
-
-bool safeSaveAsIni(const Configuration &configuration,
-                   const std::string &path) {
-    return safeSaveAsIni(configuration, StandardPath::Type::PkgConfig, path);
-}
-
-bool safeSaveAsIni(const RawConfig &config, StandardPath::Type type,
-                   const std::string &path) {
-    const auto &standardPath = StandardPath::global();
+bool safeSaveAsIni(const RawConfig &config, StandardPathsType type,
+                   const std::filesystem::path &path) {
+    const auto &standardPath = StandardPaths::global();
     return standardPath.safeSave(
         type, path, [&config](int fd) { return writeAsIni(config, fd); });
 }
 
-bool safeSaveAsIni(const Configuration &configuration, StandardPath::Type type,
-                   const std::string &path) {
+bool safeSaveAsIni(const Configuration &configuration, StandardPathsType type,
+                   const std::filesystem::path &path) {
     RawConfig config;
 
     configuration.save(config);
     return safeSaveAsIni(config, type, path);
 }
+
 } // namespace fcitx

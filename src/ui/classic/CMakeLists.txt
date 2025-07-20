@@ -31,7 +31,7 @@ if (ENABLE_DBUS)
     set(CLASSICUI_LIBS ${CLASSICUI_LIBS} Fcitx5::Module::DBus)
 endif()
 
-add_library(classicui MODULE
+add_fcitx5_addon(classicui
     classicui.cpp window.cpp theme.cpp inputwindow.cpp plasmathemewatchdog.cpp colorhelper.cpp ${CLASSICUI_SRCS}
     )
 
@@ -45,7 +45,7 @@ target_link_libraries(classicui
     PkgConfig::GdkPixbuf PkgConfig::GioUnix
     Fcitx5::Module::NotificationItem
     ${CLASSICUI_LIBS}
-    ${FMT_TARGET})
+   )
 
 install(TARGETS classicui DESTINATION "${FCITX_INSTALL_ADDONDIR}")
 configure_file(classicui.conf.in.in classicui.conf.in @ONLY)

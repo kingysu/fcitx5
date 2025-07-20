@@ -10,14 +10,26 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <algorithm>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
+#include <initializer_list>
 #include <list>
 #include <string>
-#include <type_traits>
+#include <string_view>
 #include <unordered_map>
-#include <config.h>
-#include "endian_p.h"
+#include <utility>
+#include <fcitx-utils/endian_p.h>
+#include <fcitx-utils/environ.h>
+#include <fcitx-utils/macros.h>
+#include "config.h" // IWYU pragma: keep
+
+#ifdef _WIN32
+#include <io.h>
+#include <namedpipeapi.h>
+#include <windows.h>
+#endif
 
 namespace fcitx {
 
@@ -282,8 +294,20 @@ private:
 };
 
 static inline int safePipe(int pipefd[2]) {
-#ifdef HAVE_PIPE2
+#if defined(HAVE_PIPE2)
     return ::pipe2(pipefd, O_NONBLOCK | O_CLOEXEC);
+#elif defined(_WIN32)
+    auto ret = ::_pipe(pipefd, 256, O_BINARY | O_NOINHERIT);
+    if (ret == -1) {
+        return -1;
+    }
+    std::array handle = {_get_osfhandle(pipefd[0]), _get_osfhandle(pipefd[1])};
+    DWORD mode = PIPE_NOWAIT;
+    SetNamedPipeHandleState(reinterpret_cast<HANDLE>(handle[0]), &mode, nullptr,
+                            nullptr);
+    SetNamedPipeHandleState(reinterpret_cast<HANDLE>(handle[1]), &mode, nullptr,
+                            nullptr);
+    return ret;
 #else
     int ret = ::pipe(pipefd);
     if (ret == -1)
@@ -297,11 +321,10 @@ static inline int safePipe(int pipefd[2]) {
 }
 
 static inline bool checkBoolEnvVar(const char *name) {
-    const char *var = getenv(name);
+    auto var = getEnvironment(name);
     bool value = false;
-    if (var && var[0] &&
-        (strcmp(var, "True") == 0 || strcmp(var, "true") == 0 ||
-         strcmp(var, "1") == 0)) {
+    if (var && !var->empty() &&
+        (var == "True" || var == "true" || var == "1")) {
         value = true;
     }
     return value;

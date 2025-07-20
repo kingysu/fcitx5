@@ -7,11 +7,15 @@
 #ifndef _FCITX_CANDIDATELIST_H_
 #define _FCITX_CANDIDATELIST_H_
 
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 #include <fcitx-utils/key.h>
 #include <fcitx-utils/macros.h>
 #include <fcitx/candidateaction.h>
+#include <fcitx/fcitxcore_export.h>
 #include <fcitx/text.h>
-#include "fcitxcore_export.h"
 
 namespace fcitx {
 
@@ -130,7 +134,7 @@ public:
     // Following are optional.
     virtual int totalPages() const { return -1; }
     virtual int currentPage() const { return -1; }
-    virtual void setPage(int) {}
+    virtual void setPage(int /*unused*/) {}
 };
 
 class FCITXCORE_EXPORT CursorMovableCandidateList {
@@ -183,8 +187,12 @@ public:
 class FCITXCORE_EXPORT DisplayOnlyCandidateWord : public CandidateWord {
 public:
     DisplayOnlyCandidateWord(Text text) : CandidateWord(std::move(text)) {}
+    DisplayOnlyCandidateWord(Text text, Text comment)
+        : CandidateWord(std::move(text)) {
+        setComment(std::move(comment));
+    }
 
-    void select(InputContext *) const override {}
+    void select(InputContext * /*inputContext*/) const override {}
 };
 
 class FCITXCORE_EXPORT BulkCursorCandidateList {

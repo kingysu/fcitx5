@@ -7,21 +7,29 @@
 #ifndef _FCITX_MISC_P_H_
 #define _FCITX_MISC_P_H_
 
+#include <charconv>
 #include <cstdlib>
 #include <fstream>
 #include <functional>
+#include <ios>
 #include <string>
-#include <type_traits>
-#include "fcitx-utils/charutils.h"
-#include "fcitx-utils/log.h"
-#include "fcitx-utils/misc_p.h"
-#include "fcitx-utils/stringutils.h"
-#include "fcitx/candidatelist.h"
-#include "fcitx/inputmethodentry.h"
-#include "fcitx/inputmethodmanager.h"
-#include "fcitx/instance.h"
+#include <string_view>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+#include <fcitx-utils/charutils.h>
+#include <fcitx-utils/environ.h>
+#include <fcitx-utils/key.h>
+#include <fcitx-utils/log.h>
+#include <fcitx-utils/misc.h>
+#include <fcitx-utils/misc_p.h>
+#include <fcitx-utils/stringutils.h>
+#include <fcitx/candidatelist.h>
+#include <fcitx/inputmethodentry.h>
+#include <fcitx/inputmethodmanager.h>
+#include <fcitx/instance.h>
 
-// This ia a file for random private util functions that we'd like to share
+// This is a file for random private util functions that we'd like to share
 // among different modules.
 namespace fcitx {
 
@@ -46,8 +54,8 @@ parseLayout(const std::string &layout) {
 using GetCandidateListSizeCallback = std::function<int()>;
 using GetCandidateWordCallback = std::function<const CandidateWord &(int idx)>;
 static inline const CandidateWord *nthCandidateIgnorePlaceholder(
-    GetCandidateListSizeCallback getCandidateListSizeCallback,
-    GetCandidateWordCallback getCandidateWordCallback, int idx) {
+    const GetCandidateListSizeCallback &getCandidateListSizeCallback,
+    const GetCandidateWordCallback &getCandidateWordCallback, int idx) {
     int total = 0;
     const int size = getCandidateListSizeCallback();
     if (idx < 0 || idx >= size) {
@@ -103,14 +111,12 @@ static inline std::string getLocalMachineId(const std::string &fallback = {}) {
 
 // Return false if XDG_SESSION_TYPE is set and is not given type.
 static inline bool isSessionType(std::string_view type) {
-    const char *sessionType = getenv("XDG_SESSION_TYPE");
-    if (sessionType && std::string_view(sessionType) != type) {
-        return false;
-    }
-    return true;
+    auto sessionType = getEnvironment("XDG_SESSION_TYPE");
+    return !sessionType || *sessionType == type;
 }
 
 enum class DesktopType {
+    KDE6,
     KDE5,
     KDE4,
     GNOME,
@@ -125,17 +131,18 @@ enum class DesktopType {
 };
 
 static inline DesktopType getDesktopType() {
+    if constexpr (isWindows() || isApple() || isAndroid() || isEmscripten()) {
+        return DesktopType::Unknown;
+    }
     std::string desktop;
     // new standard
-    auto *desktopEnv = getenv("XDG_CURRENT_DESKTOP");
-    if (desktopEnv) {
-        desktop = desktopEnv;
+    if (auto desktopEnv = getEnvironment("XDG_CURRENT_DESKTOP")) {
+        desktop = std::move(*desktopEnv);
     }
     if (desktop.empty()) {
         // old standard, guaranteed by display manager.
-        desktopEnv = getenv("DESKTOP_SESSION");
-        if (desktopEnv) {
-            desktop = desktopEnv;
+        if (auto desktopEnv = getEnvironment("DESKTOP_SESSION")) {
+            desktop = std::move(*desktopEnv);
         }
     }
 
@@ -146,33 +153,41 @@ static inline DesktopType getDesktopType() {
         stringutils::split(desktop, ":", stringutils::SplitBehavior::SkipEmpty);
     for (const auto &desktop : desktops) {
         if (desktop == "kde") {
-            auto *version = getenv("KDE_SESSION_VERSION");
-            auto versionInt = 0;
-            if (version) {
-                try {
-                    versionInt = std::stoi(version);
-                } catch (...) {
-                }
+            int versionInt = 0;
+            if (auto version = getEnvironment("KDE_SESSION_VERSION")) {
+                std::from_chars(version->data(),
+                                version->data() + version->size(), versionInt);
             }
             if (versionInt == 4) {
                 return DesktopType::KDE4;
             }
-            return DesktopType::KDE5;
-        } else if (desktop == "x-cinnamon") {
+            if (versionInt == 5) {
+                return DesktopType::KDE5;
+            }
+            return DesktopType::KDE6;
+        }
+        if (desktop == "x-cinnamon") {
             return DesktopType::Cinnamon;
-        } else if (desktop == "lxde") {
+        }
+        if (desktop == "lxde") {
             return DesktopType::LXDE;
-        } else if (desktop == "mate") {
+        }
+        if (desktop == "mate") {
             return DesktopType::MATE;
-        } else if (desktop == "gnome") {
+        }
+        if (desktop == "gnome") {
             return DesktopType::GNOME;
-        } else if (desktop == "xfce") {
+        }
+        if (desktop == "xfce") {
             return DesktopType::XFCE;
-        } else if (desktop == "deepin") {
+        }
+        if (desktop == "deepin" || stringutils::startsWith(desktop, "dde")) {
             return DesktopType::DEEPIN;
-        } else if (desktop == "ukui") {
+        }
+        if (desktop == "ukui") {
             return DesktopType::UKUI;
-        } else if (desktop == "sway") {
+        }
+        if (desktop == "sway") {
             return DesktopType::Sway;
         }
     }
@@ -181,14 +196,16 @@ static inline DesktopType getDesktopType() {
 
 static inline bool isKDE() {
     static const DesktopType desktop = getDesktopType();
-    return desktop == DesktopType::KDE4 || desktop == DesktopType::KDE5;
+    return desktop == DesktopType::KDE4 || desktop == DesktopType::KDE5 ||
+           desktop == DesktopType::KDE6;
 }
 
 static inline bool hasTwoKeyboardInCurrentGroup(Instance *instance) {
     size_t numOfKeyboard = 0;
     for (const auto &item :
          instance->inputMethodManager().currentGroup().inputMethodList()) {
-        if (auto entry = instance->inputMethodManager().entry(item.name());
+        if (const auto *entry =
+                instance->inputMethodManager().entry(item.name());
             entry && entry->isKeyboard()) {
             ++numOfKeyboard;
         }
@@ -199,7 +216,8 @@ static inline bool hasTwoKeyboardInCurrentGroup(Instance *instance) {
 
     std::unordered_set<std::string> groupLayouts;
     for (const auto &groupName : instance->inputMethodManager().groups()) {
-        if (auto group = instance->inputMethodManager().group(groupName)) {
+        if (const auto *group =
+                instance->inputMethodManager().group(groupName)) {
             groupLayouts.insert(group->defaultLayout());
         }
         if (groupLayouts.size() >= 2) {
@@ -211,9 +229,9 @@ static inline bool hasTwoKeyboardInCurrentGroup(Instance *instance) {
 
 static inline std::string getCurrentLanguage() {
     for (const char *vars : {"LC_ALL", "LC_MESSAGES", "LANG"}) {
-        auto *lang = getenv(vars);
-        if (lang && lang[0]) {
-            return lang;
+        auto lang = getEnvironment(vars);
+        if (lang && !lang->empty()) {
+            return std::move(*lang);
         }
     }
     return "";

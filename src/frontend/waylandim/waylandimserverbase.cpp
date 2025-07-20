@@ -5,10 +5,20 @@
  */
 
 #include "waylandimserverbase.h"
+#include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
+#include <tuple>
+#include <utility>
 #include <wayland-client-core.h>
+#include <wayland-client-protocol.h>
+#include "fcitx-utils/key.h"
+#include "fcitx-utils/keysym.h"
 #include "fcitx-utils/utf8.h"
+#include "fcitx/focusgroup.h"
+#include "display.h"
+#include "wayland_public.h"
 #include "waylandim.h"
 #include "wl_seat.h"
 

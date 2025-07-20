@@ -1,34 +1,44 @@
 #include "waylandcursortheme.h"
+#include <charconv>
+#include <cstdlib>
 #include <memory>
+#include <string>
+#include <system_error>
+#include <utility>
 #include <wayland-cursor.h>
+#include "fcitx-utils/environ.h"
 #include "fcitx-utils/misc_p.h"
-#include "dbus_public.h"
-#include "portalsettingmonitor.h"
 #include "waylandui.h"
 #include "wl_shm.h"
+
+#ifdef ENABLE_DBUS
+#include "fcitx-utils/dbus/variant.h"
+#include "dbus_public.h"
+#include "portalsettingmonitor.h"
+#endif
 
 namespace fcitx::classicui {
 
 WaylandCursorTheme::WaylandCursorTheme(WaylandUI *ui)
     : shm_(ui->display()->getGlobal<wayland::WlShm>()) {
 
-    char *size = getenv("XCURSOR_SIZE");
-    if (size) {
-        try {
-            setCursorSize(std::stoi(size));
-        } catch (...) {
+    if (auto size = getEnvironment("XCURSOR_SIZE")) {
+        unsigned int cursorSize = 0;
+        if (std::from_chars(size->data(), size->data() + size->size(),
+                            cursorSize)
+                .ec == std::errc()) {
+            setCursorSize(cursorSize);
         }
     }
 
-    char *theme = getenv("XCURSOR_THEME");
-    if (theme) {
-        setTheme(theme);
+    if (auto theme = getEnvironment("XCURSOR_THEME")) {
+        setTheme(*theme);
     } else {
         setTheme({});
     }
 
 #ifdef ENABLE_DBUS
-    if (auto dbusAddon = ui->parent()->dbus()) {
+    if (auto *dbusAddon = ui->parent()->dbus()) {
         settingMonitor_ = std::make_unique<PortalSettingMonitor>(
             *dbusAddon->call<IDBusModule::bus>());
         cursorSizeWatcher_ =
@@ -72,7 +82,7 @@ void WaylandCursorTheme::setTheme(const std::string &theme) {
 
 WaylandCursorInfo WaylandCursorTheme::loadCursorTheme(int scale) {
     auto size = cursorSize_ * scale;
-    if (auto theme = findValue(themes_, size)) {
+    if (auto *theme = findValue(themes_, size)) {
         return *theme;
     }
     WaylandCursorInfo info;

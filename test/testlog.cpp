@@ -4,9 +4,13 @@
  * SPDX-License-Identifier: LGPL-2.1-or-later
  *
  */
+#include <iostream>
 #include <sstream>
-#include <fcitx-utils/log.h>
-#include <fcitx-utils/metastring.h>
+#include <string>
+#include <tuple>
+#include <unordered_map>
+#include <vector>
+#include "fcitx-utils/log.h"
 
 int main() {
     int a = 0;

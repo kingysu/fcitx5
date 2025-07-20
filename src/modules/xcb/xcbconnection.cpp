@@ -7,7 +7,6 @@
 
 #include "xcbconnection.h"
 #include <stdexcept>
-#include <fmt/format.h>
 #include <xcb/randr.h>
 #include <xcb/xcb.h>
 #include <xcb/xcb_aux.h>
@@ -173,6 +172,17 @@ XCBConnection::XCBConnection(XCBModule *xcb, const std::string &name)
             if (xfixes_query && xfixes_query->major_version >= 2) {
                 hasXFixes_ = true;
                 xfixesFirstEvent_ = reply->first_event;
+
+#ifdef XCB_XFIXES_SET_CLIENT_DISCONNECT_MODE
+                if (xfixes_query->major_version >= 6 &&
+                    parent_->isClientDisconnectModeTerminate()) {
+                    FCITX_XCB_INFO()
+                        << "Set XFIXES client disconnect mode to TERMINATE";
+                    xcb_xfixes_set_client_disconnect_mode(
+                        conn_.get(),
+                        XCB_XFIXES_CLIENT_DISCONNECT_FLAGS_TERMINATE);
+                }
+#endif
             }
         }
     }
@@ -339,7 +349,6 @@ void XCBConnection::processEvent() {
             }
         }
     }
-    reader_->wakeUp();
 }
 
 bool XCBConnection::filterEvent(xcb_connection_t *,
@@ -554,9 +563,7 @@ void XCBConnection::navigateGroup(const Key &key, bool forward) {
         parent_->notifications()->call<INotifications::showTip>(
             "enumerate-group", _("Input Method"), "input-keyboard",
             _("Switch group"),
-            fmt::format(_("Switch group to {0}"),
-                        imManager.groups()[groupIndex_]),
-            3000);
+            _("Switch group to {0}", imManager.groups()[groupIndex_]), 3000);
     }
 }
 

@@ -7,10 +7,14 @@
 #ifndef _FCITX5_FRONTEND_WAYLANDIM_VIRTUALINPUTCONTEXT_H_
 #define _FCITX5_FRONTEND_WAYLANDIM_VIRTUALINPUTCONTEXT_H_
 
+#include <memory>
 #include <optional>
-#include <fcitx/inputcontext.h>
+#include <string>
+#include <unordered_map>
 #include "fcitx-utils/capabilityflags.h"
 #include "fcitx-utils/signals.h"
+#include "fcitx/event.h"
+#include "fcitx/inputcontext.h"
 #include "appmonitor.h"
 
 namespace fcitx {
@@ -50,17 +54,17 @@ public:
 
 private:
     void commitStringImpl(const std::string &text) override {
-        return commitStringDelegate(this, text);
+        commitStringDelegate(this, text);
     }
 
     void deleteSurroundingTextImpl(int offset, unsigned int size) override {
-        return deleteSurroundingTextDelegate(this, offset, size);
+        deleteSurroundingTextDelegate(this, offset, size);
     }
 
     void forwardKeyImpl(const ForwardKeyEvent &key) override {
-        return forwardKeyDelegate(this, key);
+        forwardKeyDelegate(this, key);
     }
-    void updatePreeditImpl() override { return updatePreeditDelegate(this); }
+    void updatePreeditImpl() override { updatePreeditDelegate(this); }
 
     bool realFocus_ = false;
     VirtualInputContextManager *virtualICManager_ = nullptr;

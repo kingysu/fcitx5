@@ -7,17 +7,19 @@
 #include "quickphraseprovider.h"
 #include <fcntl.h>
 #include <cstddef>
+#include <istream>
 #include <string>
 #include <string_view>
 #include <utility>
-#include <fcitx-utils/utf8.h>
-#include <fcitx/inputmethodentry.h>
+#include "fcitx-utils/fdstreambuf.h"
 #include "fcitx-utils/fs.h"
 #include "fcitx-utils/macros.h"
 #include "fcitx-utils/misc.h"
-#include "fcitx-utils/standardpath.h"
+#include "fcitx-utils/standardpaths.h"
 #include "fcitx-utils/stringutils.h"
+#include "fcitx-utils/utf8.h"
 #include "fcitx/inputcontext.h"
+#include "fcitx/inputmethodentry.h"
 #include "quickphrase.h"
 #include "quickphrase_public.h"
 #include "spell_public.h"
@@ -42,36 +44,38 @@ bool BuiltInQuickPhraseProvider::populate(
 void BuiltInQuickPhraseProvider::reloadConfig() {
 
     map_.clear();
-    if (auto file = StandardPath::global().open(
-            StandardPath::Type::PkgData, "data/QuickPhrase.mb", O_RDONLY);
-        file.fd() >= 0) {
-        load(fs::openFD(file, "rb"));
+    if (auto file = StandardPaths::global().open(StandardPathsType::PkgData,
+                                                 "data/QuickPhrase.mb");
+        file.isValid()) {
+        load(file.fd());
     }
 
-    auto files = StandardPath::global().locate(StandardPath::Type::PkgData,
-                                               "data/quickphrase.d/",
-                                               filter::Suffix(".mb"));
-    auto disableFiles = StandardPath::global().locate(
-        StandardPath::Type::PkgData, "data/quickphrase.d/",
-        filter::Suffix(".mb.disable"));
-    for (auto &p : files) {
-        if (disableFiles.count(stringutils::concat(p.first, ".disable"))) {
+    auto files = StandardPaths::global().locate(StandardPathsType::PkgData,
+                                                "data/quickphrase.d/",
+                                                pathfilter::extension(".mb"));
+    auto disableFiles = StandardPaths::global().locate(
+        StandardPathsType::PkgData, "data/quickphrase.d/",
+        pathfilter::extension(".disable"));
+    for (const auto &p : files) {
+        auto path = p.first;
+        // std::filesystem::path can only do +=.
+        path += ".disable";
+        if (disableFiles.contains(path)) {
             continue;
         }
-        UnixFD fd = UnixFD::own(open(p.second.c_str(), O_RDONLY));
-        load(fs::openFD(fd, "rb"));
+        UnixFD fd = StandardPaths::openPath(p.second);
+        if (fd.isValid()) {
+            load(fd.fd());
+        }
     }
 }
 
-void BuiltInQuickPhraseProvider::load(UniqueFilePtr fp) {
-    if (!fp) {
-        return;
-    }
-
-    UniqueCPtr<char> buf;
-    size_t len = 0;
-    while (getline(buf, &len, fp.get()) != -1) {
-        std::string_view text = stringutils::trimView(buf.get());
+void BuiltInQuickPhraseProvider::load(int fd) {
+    IFDStreamBuf buf(fd);
+    std::istream in(&buf);
+    std::string line;
+    while (std::getline(in, line)) {
+        std::string_view text = stringutils::trimView(line);
         if (text.empty()) {
             continue;
         }
@@ -120,6 +124,12 @@ bool SpellQuickPhraseProvider::populate(
             return true;
         }
     }
+
+    // Do not give spell hint if input contains url like character.
+    if (userInput.find_first_of(".@/+%") != std::string::npos) {
+        return true;
+    }
+
     const auto result = spell->call<ISpell::hint>(
         lang, userInput, instance_->globalConfig().defaultPageSize());
     for (const auto &word : result) {

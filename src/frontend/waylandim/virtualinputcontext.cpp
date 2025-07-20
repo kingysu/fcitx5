@@ -5,9 +5,16 @@
  *
  */
 #include "virtualinputcontext.h"
+#include <cassert>
+#include <memory>
+#include <optional>
 #include <string>
+#include <unordered_map>
+#include <utility>
+#include "fcitx-utils/capabilityflags.h"
 #include "fcitx-utils/misc_p.h"
 #include "fcitx/inputcontext.h"
+#include "appmonitor.h"
 
 namespace fcitx {
 
@@ -116,7 +123,7 @@ InputContext *VirtualInputContextManager::focusedVirtualIC() {
 void VirtualInputContextManager::appUpdated(
     const std::unordered_map<std::string, std::string> &appState,
     std::optional<std::string> focus) {
-    assert(!focus || appState.count(*focus));
+    assert(!focus || appState.contains(*focus));
     lastAppState_ = appState;
     for (auto iter = managed_.begin(); iter != managed_.end();) {
         if (!findValue(lastAppState_, iter->first)) {

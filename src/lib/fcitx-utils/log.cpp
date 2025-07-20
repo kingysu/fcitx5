@@ -6,15 +6,24 @@
  */
 
 #include "log.h"
+#include <charconv>
+#include <chrono>
+#include <cstdlib>
+#include <iostream>
+#include <memory>
 #include <mutex>
+#include <ostream>
+#include <string>
+#include <string_view>
+#include <system_error>
 #include <type_traits>
 #include <unordered_set>
-#include <fmt/format.h>
+#include <utility>
+#include <vector>
+#include <format>
+#include <syncstream>
+#include "macros.h"
 #include "stringutils.h"
-
-#if FMT_VERSION >= 50300
-#include <fmt/chrono.h>
-#endif
 
 namespace fcitx {
 
@@ -25,9 +34,18 @@ FCITX_DEFINE_LOG_CATEGORY(defaultCategory, "default");
 using LogRule = std::pair<std::string, LogLevel>;
 
 struct LogConfig {
-    std::ostream *defaultLogStream = &std::cerr;
-    bool showTimeDate = true;
-} globalLogConfig;
+    static std::ostream *defaultLogStream;
+    static thread_local std::osyncstream localLogStream;
+    static bool showTimeDate;
+};
+
+std::ostream *LogConfig::defaultLogStream = &std::cerr;
+thread_local std::osyncstream LogConfig::localLogStream = []() {
+    std::osyncstream out(*LogConfig::defaultLogStream);
+    out.rdbuf()->set_emit_on_sync(true);
+    return out;
+}();
+bool LogConfig::showTimeDate = true;
 
 bool validateLogLevel(std::underlying_type_t<LogLevel> l) {
     return (l >= 0 &&
@@ -43,7 +61,7 @@ public:
 
     void registerCategory(LogCategory &category) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!categories_.count(&category)) {
+        if (!categories_.contains(&category)) {
             categories_.insert(&category);
             applyRule(&category);
         }
@@ -155,7 +173,7 @@ void Log::setLogRule(const std::string &ruleString) {
     auto rules = stringutils::split(ruleString, ",");
     for (const auto &rule : rules) {
         if (rule == "notimedate") {
-            globalLogConfig.showTimeDate = false;
+            LogConfig::showTimeDate = false;
             continue;
         }
 
@@ -164,23 +182,30 @@ void Log::setLogRule(const std::string &ruleString) {
             continue;
         }
         auto &name = ruleItem[0];
-        try {
-            auto level = std::stoi(ruleItem[1]);
+        int level;
+        if (std::from_chars(ruleItem[1].data(),
+                            ruleItem[1].data() + ruleItem[1].size(), level)
+                .ec == std::errc()) {
             if (validateLogLevel(level)) {
                 parsedRules.emplace_back(name, static_cast<LogLevel>(level));
             }
-        } catch (const std::exception &) {
-            continue;
         }
     }
     LogRegistry::instance().setLogRules(parsedRules);
 }
 
 void Log::setLogStream(std::ostream &stream) {
-    globalLogConfig.defaultLogStream = &stream;
+    LogConfig::defaultLogStream = &stream;
 }
 
-std::ostream &Log::logStream() { return *globalLogConfig.defaultLogStream; }
+std::ostream &Log::logStream() {
+    auto *buf = LogConfig::defaultLogStream->rdbuf();
+    if (LogConfig::localLogStream.get_wrapped() != buf) {
+        LogConfig::localLogStream = std::osyncstream(buf);
+        LogConfig::localLogStream.rdbuf()->set_emit_on_sync(true);
+    }
+    return LogConfig::localLogStream;
+}
 
 LogMessageBuilder::LogMessageBuilder(std::ostream &out, LogLevel l,
                                      const char *filename, int lineNumber)
@@ -205,22 +230,29 @@ LogMessageBuilder::LogMessageBuilder(std::ostream &out, LogLevel l,
         break;
     }
 
-#if FMT_VERSION >= 50300
-    if (globalLogConfig.showTimeDate) {
+    if (LogConfig::showTimeDate) {
         try {
-            auto now = std::chrono::system_clock::now();
-            auto floor = std::chrono::floor<std::chrono::seconds>(now);
-            auto micro = std::chrono::duration_cast<std::chrono::microseconds>(
-                now - floor);
-            auto t = fmt::localtime(std::chrono::system_clock::to_time_t(now));
-            auto timeString = fmt::format("{:%F %T}.{:06d}", t, micro.count());
+            auto now = std::chrono::time_point_cast<std::chrono::microseconds>(
+                std::chrono::system_clock::now());
+#if __cpp_lib_chrono >= 201907L
+            const auto *current_zone = std::chrono::current_zone();
+            std::chrono::zoned_time zoned_time{current_zone, now};
+
+            auto timeString = std::format("{:%F %T}", zoned_time);
+#else
+            auto timeString = std::format("{:%F %T}", now);
+#endif
             out_ << timeString << " ";
         } catch (...) {
         }
     }
-#endif
+
     out_ << filename << ":" << lineNumber << "] ";
 }
 
-LogMessageBuilder::~LogMessageBuilder() { out_ << std::endl; }
+LogMessageBuilder::~LogMessageBuilder() {
+    out_ << '\n';
+    out_.flush();
+}
+
 } // namespace fcitx

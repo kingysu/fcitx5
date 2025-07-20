@@ -6,13 +6,23 @@
  */
 
 #include "key.h"
+#include <algorithm>
+#include <charconv>
+#include <cstdint>
 #include <cstring>
+#include <exception>
+#include <string>
+#include <string_view>
 #include <unordered_map>
+#include <vector>
 #include "charutils.h"
 #include "i18n.h"
 #include "keydata.h"
 #include "keynametable-compat.h"
 #include "keynametable.h"
+#include "keysym.h"
+#include "macros.h"
+#include "misc.h"
 #include "misc_p.h"
 #include "stringutils.h"
 #include "utf8.h"
@@ -312,15 +322,15 @@ Key::Key(const char *keyString) : Key() {
 #undef _CHECK_MODIFIER
 
     // Special code for keycode baesd parsing.
-    std::string keyValue = lastModifier;
+    std::string_view keyValue = lastModifier;
     if (stringutils::startsWith(keyValue, "<") &&
         stringutils::endsWith(keyValue, ">")) {
-        try {
-            code_ = std::stoi(keyValue.substr(1, keyValue.size() - 2));
-        } catch (const std::exception &) {
-        }
+        keyValue.remove_prefix(1);
+        keyValue.remove_suffix(1);
+        std::from_chars(keyValue.data(), keyValue.data() + keyValue.size(),
+                        code_);
     } else {
-        sym_ = keySymFromString(lastModifier);
+        sym_ = keySymFromString(std::string(keyValue));
     }
     states_ = states;
 }
@@ -335,26 +345,40 @@ bool Key::isReleaseOfModifier(const Key &key) const {
     std::vector<Key> keys;
     keys.emplace_back(key.sym(), states);
     if (key.states() & KeyState::Ctrl) {
-        keys.emplace_back(FcitxKey_Control_L, states);
-        keys.emplace_back(FcitxKey_Control_R, states);
+        if (key.sym() != FcitxKey_Control_R) {
+            keys.emplace_back(FcitxKey_Control_L, states);
+        }
+        if (key.sym() != FcitxKey_Control_L) {
+            keys.emplace_back(FcitxKey_Control_R, states);
+        }
     }
     if (key.states() & KeyState::Alt) {
-        keys.emplace_back(FcitxKey_Alt_L, states);
-        keys.emplace_back(FcitxKey_Alt_R, states);
-        keys.emplace_back(FcitxKey_Meta_L, states);
-        keys.emplace_back(FcitxKey_Meta_R, states);
+        if (key.sym() != FcitxKey_Alt_R && key.sym() != FcitxKey_Meta_R) {
+            keys.emplace_back(FcitxKey_Alt_L, states);
+            keys.emplace_back(FcitxKey_Meta_L, states);
+        }
+        if (key.sym() != FcitxKey_Alt_L && key.sym() != FcitxKey_Meta_L) {
+            keys.emplace_back(FcitxKey_Alt_R, states);
+            keys.emplace_back(FcitxKey_Meta_R, states);
+        }
     }
     if (key.states() & KeyState::Shift) {
-        keys.emplace_back(FcitxKey_Shift_L, states);
-        keys.emplace_back(FcitxKey_Shift_R, states);
+        if (key.sym() != FcitxKey_Shift_R) {
+            keys.emplace_back(FcitxKey_Shift_L, states);
+        }
+        if (key.sym() != FcitxKey_Shift_L) {
+            keys.emplace_back(FcitxKey_Shift_R, states);
+        }
     }
     if ((key.states() & KeyState::Super) || (key.states() & KeyState::Super2)) {
-        keys.emplace_back(FcitxKey_Super_L, states);
-        keys.emplace_back(FcitxKey_Super_R, states);
-    }
-    if ((key.states() & KeyState::Super) || (key.states() & KeyState::Hyper2)) {
-        keys.emplace_back(FcitxKey_Hyper_L, states);
-        keys.emplace_back(FcitxKey_Hyper_R, states);
+        if (key.sym() != FcitxKey_Super_R && key.sym() != FcitxKey_Hyper_R) {
+            keys.emplace_back(FcitxKey_Super_L, states);
+            keys.emplace_back(FcitxKey_Hyper_L, states);
+        }
+        if (key.sym() != FcitxKey_Super_L && key.sym() != FcitxKey_Hyper_L) {
+            keys.emplace_back(FcitxKey_Super_R, states);
+            keys.emplace_back(FcitxKey_Hyper_R, states);
+        }
     }
 
     return checkKeyList(keys);
@@ -470,6 +494,11 @@ bool Key::isVirtual() const { return states_.test(KeyState::Virtual); }
 
 Key Key::normalize() const {
     Key key(*this);
+
+    if (key.sym_ == FcitxKey_ISO_Left_Tab) {
+        key.sym_ = FcitxKey_Tab;
+    }
+
     /* key state != 0 */
     key.states_ =
         key.states_ & KeyStates({KeyState::Ctrl_Alt_Shift, KeyState::Super,
@@ -495,15 +524,12 @@ Key Key::normalize() const {
             if ((key.states_ & KeyState::Shift) &&
                 (((Key(key.sym_).isSimple() ||
                    keySymToUnicode(key.sym_) != 0) &&
-                  key.sym_ != FcitxKey_space && key.sym_ != FcitxKey_Return) ||
+                  key.sym_ != FcitxKey_space && key.sym_ != FcitxKey_Return &&
+                  key.sym_ != FcitxKey_Tab) ||
                  (key.sym_ >= FcitxKey_KP_0 && key.sym_ <= FcitxKey_KP_9))) {
                 key.states_ ^= KeyState::Shift;
             }
         }
-    }
-
-    if (key.sym_ == FcitxKey_ISO_Left_Tab) {
-        key.sym_ = FcitxKey_Tab;
     }
 
     return key;
@@ -677,16 +703,19 @@ KeySym Key::keySymFromUnicode(uint32_t unicode) {
     if ((unicode >= (FcitxKey_BackSpace & 0x7f) &&
          unicode <= (FcitxKey_Clear & 0x7f)) ||
         unicode == (FcitxKey_Return & 0x7f) ||
-        unicode == (FcitxKey_Escape & 0x7f))
+        unicode == (FcitxKey_Escape & 0x7f)) {
         return static_cast<KeySym>(unicode | 0xff00);
-    if (unicode == (FcitxKey_Delete & 0x7f))
+    }
+    if (unicode == (FcitxKey_Delete & 0x7f)) {
         return FcitxKey_Delete;
+    }
 
     /* Unicode non-symbols and code points outside Unicode planes */
     if ((unicode >= 0xd800 && unicode <= 0xdfff) ||
         (unicode >= 0xfdd0 && unicode <= 0xfdef) || unicode > 0x10ffff ||
-        (unicode & 0xfffe) == 0xfffe)
+        (unicode & 0xfffe) == 0xfffe) {
         return FcitxKey_None;
+    }
 
     /* Binary search in table */
     while (max >= min) {

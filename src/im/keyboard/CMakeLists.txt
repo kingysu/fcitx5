@@ -1,12 +1,11 @@
 add_library(keyboard STATIC keyboard.cpp isocodes.cpp xkbrules.cpp xmlparser.cpp longpress.cpp compose.cpp)
-target_link_libraries(keyboard Fcitx5::Core Expat::Expat LibIntl::LibIntl Fcitx5::Module::Spell Fcitx5::Module::Notifications XKBCommon::XKBCommon Fcitx5::Module::QuickPhrase PkgConfig::JsonC ${FMT_TARGET})
+target_link_libraries(keyboard Fcitx5::Core Expat::Expat LibIntl::LibIntl Fcitx5::Module::Spell Fcitx5::Module::Notifications XKBCommon::XKBCommon Fcitx5::Module::QuickPhrase PkgConfig::JsonC)
 if (ENABLE_X11)
     target_link_libraries(keyboard Fcitx5::Module::XCB)
 endif()
 if (TARGET Fcitx5::Module::Emoji)
     target_link_libraries(keyboard Fcitx5::Module::Emoji)
 endif()
-target_include_directories(keyboard PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>")
 configure_file(keyboard.conf.in.in keyboard.conf.in @ONLY)
 fcitx5_translate_desktop_file(${CMAKE_CURRENT_BINARY_DIR}/keyboard.conf.in keyboard.conf)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/keyboard.conf" DESTINATION "${FCITX_INSTALL_PKGDATADIR}/addon"

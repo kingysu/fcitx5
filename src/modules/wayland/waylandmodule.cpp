@@ -8,27 +8,46 @@
 #include "waylandmodule.h"
 #include <fcntl.h>
 #include <algorithm>
+#include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <tuple>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+#include <fcitx-utils/handlertable.h>
 #include <gio/gio.h>
+#include <glib-object.h>
+#include <glib.h>
+#include <wayland-client-core.h>
 #include <wayland-client-protocol.h>
 #include "fcitx-config/iniparser.h"
+#include "fcitx-config/rawconfig.h"
+#include "fcitx-utils/environ.h"
 #include "fcitx-utils/event.h"
+#include "fcitx-utils/eventloopinterface.h"
+#include "fcitx-utils/i18n.h"
 #include "fcitx-utils/log.h"
 #include "fcitx-utils/misc.h"
 #include "fcitx-utils/misc_p.h"
-#include "fcitx-utils/standardpath.h"
+#include "fcitx-utils/standardpaths.h"
 #include "fcitx-utils/stringutils.h"
 #include "fcitx-utils/trackableobject.h"
+#include "fcitx-utils/unixfd.h"
 #include "fcitx/addonfactory.h"
+#include "fcitx/addoninstance.h"
+#include "fcitx/event.h"
 #include "fcitx/inputcontext.h"
 #include "fcitx/instance.h"
 #include "fcitx/misc_p.h"
 #include "config.h"
+#include "display.h"
 #include "notifications_public.h"
+#include "wayland_public.h"
 #include "waylandeventreader.h"
 #include "wl_seat.h"
 
@@ -45,20 +64,16 @@ namespace fcitx {
 FCITX_DEFINE_LOG_CATEGORY(wayland_log, "wayland");
 
 namespace {
-bool isKDE5() {
+bool isKDE5Plus() {
     static const DesktopType desktop = getDesktopType();
-    return desktop == DesktopType::KDE5;
+    return desktop == DesktopType::KDE5 || desktop == DesktopType::KDE6;
 }
 
 class ScopedEnvvar {
 public:
     explicit ScopedEnvvar(std::string name, const char *value)
         : name_(std::move(name)) {
-        auto old = getenv(name_.data());
-        if (old) {
-            oldValue_ = std::string(old);
-        }
-
+        oldValue_ = getEnvironment(name_.data());
         setenv(name_.data(), value, true);
     }
 
@@ -87,7 +102,7 @@ WaylandConnection::WaylandConnection(WaylandModule *wayland, std::string name)
         }
         // When WAYLAND_SOCKET is set, wl_display_connect will use it
         // regardlessly, no matter it is valid or not.
-        if (getenv("WAYLAND_SOCKET")) {
+        if (getEnvironment("WAYLAND_SOCKET")) {
             isWaylandSocket_ = true;
         }
         display = wl_display_connect(name_.empty() ? nullptr : name_.c_str());
@@ -98,8 +113,8 @@ WaylandConnection::WaylandConnection(WaylandModule *wayland, std::string name)
     if (!isWaylandSocket_ && name_.empty()) {
         // This is same as wl_display_connect(nullptr) logic.
         realName_ = "wayland-0";
-        if (auto displayEnv = getenv("WAYLAND_DISPLAY")) {
-            realName_ = displayEnv;
+        if (auto displayEnv = getEnvironment("WAYLAND_DISPLAY")) {
+            realName_ = *displayEnv;
         }
     }
     init(display);
@@ -135,6 +150,11 @@ void WaylandConnection::init(wl_display *display) {
         [this](const std::string &name, const std::shared_ptr<void> &seat) {
             if (name == wayland::WlSeat::interface) {
                 setupKeyboard(static_cast<wayland::WlSeat *>(seat.get()));
+            } else if (name == "zwp_input_method_v1") {
+                // Do a defered layou sync, since this is callback is called
+                // before waylandim setup.
+                parent_->instance()->eventDispatcher().scheduleWithContext(
+                    watch(), [this]() { parent_->setLayoutToCompositor(); });
             }
         });
     panelRemovedConn_ = display_->globalRemoved().connect(
@@ -189,22 +209,7 @@ WaylandModule::WaylandModule(fcitx::Instance *instance)
 #ifdef ENABLE_DBUS
     eventHandlers_.emplace_back(instance_->watchEvent(
         EventType::InputMethodGroupChanged, EventWatcherPhase::Default,
-        [this](Event &) {
-            if (!isWaylandSession_ || !*config_.allowOverrideXKB) {
-                return;
-            }
-
-            auto connection = findValue(conns_, "");
-            if (!connection) {
-                return;
-            }
-
-            if (isKDE5()) {
-                setLayoutToKDE5();
-            } else if (getDesktopType() == DesktopType::GNOME) {
-                setLayoutToGNOME();
-            }
-        }));
+        [this](Event &) { setLayoutToCompositor(); }));
 
     deferredDiagnose_ = instance_->eventLoop().addTimeEvent(
         CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 7000000, 0,
@@ -303,7 +308,7 @@ bool WaylandModule::reopenConnectionSocket(const std::string &displayName,
                     break;
                 }
 
-                if (auto displayEnv = getenv("WAYLAND_DISPLAY")) {
+                if (auto displayEnv = getEnvironment("WAYLAND_DISPLAY")) {
                     if (name == displayEnv) {
                         name = "";
                     }
@@ -345,7 +350,7 @@ bool WaylandModule::reopenConnectionSocket(const std::string &displayName,
         // Transfer it to new connection's IC group, we do create two focus
         // group with same name, but well, ic manager doesn't check that.
         for (const auto &icRef : ics) {
-            if (auto ic = icRef.get()) {
+            if (auto *ic = icRef.get()) {
                 if (!ic->focusGroup()) {
                     ic->setFocusGroup(iter->second->focusGroup());
                 }
@@ -423,7 +428,7 @@ void WaylandModule::reloadXkbOptionReal() {
 
     FCITX_WAYLAND_DEBUG() << "Try to reload Xkb option from desktop";
     std::optional<std::string> xkbOption = std::nullopt;
-    if (isKDE5()) {
+    if (isKDE5Plus()) {
 
         auto dbusAddon = dbus();
         if (!dbusAddon) {
@@ -431,7 +436,7 @@ void WaylandModule::reloadXkbOptionReal() {
         }
 
         fcitx::RawConfig config;
-        readAsIni(config, StandardPath::Type::Config, "kxkbrc");
+        readAsIni(config, StandardPathsType::Config, "kxkbrc");
         auto model = config.valueByPath("Layout/Model");
         auto options = config.valueByPath("Layout/Options");
         xkbOption = (options ? *options : "");
@@ -468,10 +473,14 @@ void WaylandModule::reloadXkbOptionReal() {
 #endif
 }
 
-void WaylandModule::setLayoutToKDE5() {
+void WaylandModule::setLayoutToKDE() {
 #ifdef ENABLE_DBUS
-    auto dbusAddon = dbus();
+    auto *dbusAddon = dbus();
     if (!dbusAddon) {
+        return;
+    }
+
+    if (!hasWaylandInputMethod()) {
         return;
     }
 
@@ -483,7 +492,7 @@ void WaylandModule::setLayoutToKDE5() {
     }
 
     fcitx::RawConfig config;
-    readAsIni(config, StandardPath::Type::Config, "kxkbrc");
+    readAsIni(config, StandardPathsType::Config, "kxkbrc");
     config.setValueByPath("Layout/LayoutList", layoutAndVariant.first);
     config.setValueByPath("Layout/VariantList", layoutAndVariant.second);
     config.setValueByPath("Layout/DisplayNames", "");
@@ -494,15 +503,18 @@ void WaylandModule::setLayoutToKDE5() {
     // if the intention is to get the file populated outside the
     // sandbox.
     if (isInFlatpak()) {
-        auto file = StandardPath::global().open(StandardPath::Type::Config,
-                                                "kxkbrc", O_WRONLY);
+        auto path =
+            StandardPaths::global().userDirectory(StandardPathsType::Config) /
+            "kxkbrc";
+        auto file =
+            StandardPaths::openPath(path, O_WRONLY | O_TRUNC | O_CREAT, 0644);
         if (file.isValid()) {
             writeAsIni(config, file.fd());
         } else {
             FCITX_WAYLAND_ERROR() << "Failed to write to kxkbrc.";
         }
     } else {
-        safeSaveAsIni(config, StandardPath::Type::Config, "kxkbrc");
+        safeSaveAsIni(config, StandardPathsType::Config, "kxkbrc");
     }
 
     auto bus = dbusAddon->call<IDBusModule::bus>();
@@ -542,8 +554,8 @@ void WaylandModule::setLayoutToGNOME() {
 #endif
 }
 
-void WaylandModule::selfDiagnose() {
-    if (!isWaylandSession_) {
+void WaylandModule::setLayoutToCompositor() {
+    if (!isWaylandSession_ || !*config_.allowOverrideXKB) {
         return;
     }
 
@@ -552,10 +564,14 @@ void WaylandModule::selfDiagnose() {
         return;
     }
 
-    if (!notifications()) {
-        return;
+    if (isKDE5Plus()) {
+        setLayoutToKDE();
+    } else if (getDesktopType() == DesktopType::GNOME) {
+        setLayoutToGNOME();
     }
+}
 
+bool WaylandModule::hasWaylandInputMethod() const {
     bool isWaylandIM = false;
     if (isInFlatpak()) {
         // In flatpak, ReopenWaylandConnection will not replace existing
@@ -573,14 +589,38 @@ void WaylandModule::selfDiagnose() {
             }
         }
     } else {
-        (*connection)->focusGroup()->foreach([&isWaylandIM](InputContext *ic) {
-            if (stringutils::startsWith(ic->frontendName(), "wayland")) {
-                isWaylandIM = true;
-                return false;
-            }
-            return true;
-        });
+        const auto *connection = findValue(conns_, "");
+        if (connection) {
+            (*connection)
+                ->focusGroup()
+                ->foreach([&isWaylandIM](InputContext *ic) {
+                    if (stringutils::startsWith(ic->frontendName(),
+                                                "wayland")) {
+                        isWaylandIM = true;
+                        return false;
+                    }
+                    return true;
+                });
+        }
     }
+    return isWaylandIM;
+}
+
+void WaylandModule::selfDiagnose() {
+    if (!isWaylandSession_) {
+        return;
+    }
+
+    auto *connection = findValue(conns_, "");
+    if (!connection) {
+        return;
+    }
+
+    if (!notifications()) {
+        return;
+    }
+
+    bool isWaylandIM = hasWaylandInputMethod();
 
     auto sendMessage = [this](const std::string &category,
                               const std::string &message) {
@@ -589,14 +629,22 @@ void WaylandModule::selfDiagnose() {
             60000);
     };
 
-    auto *gtk = getenv("GTK_IM_MODULE");
-    auto *qt = getenv("QT_IM_MODULE");
-    std::string gtkIM = gtk ? gtk : "";
-    std::string qtIM = qt ? qt : "";
+    auto gtkIM = getEnvironmentOrEmpty("GTK_IM_MODULE");
+    auto qtIM = getEnvironmentOrEmpty("QT_IM_MODULE");
+    auto qtsIM = getEnvironmentOrEmpty("QT_IM_MODULES");
+
+    FCITX_WAYLAND_INFO() << "Wayland self diagnose information";
+    FCITX_WAYLAND_INFO() << "Using Wayland native input method protocol: "
+                         << isWaylandIM;
+    FCITX_WAYLAND_INFO()
+        << "Toolkit specific environment variable detected by process:";
+    FCITX_WAYLAND_INFO() << "GTK_IM_MODULE=" << gtkIM;
+    FCITX_WAYLAND_INFO() << "QT_IM_MODULE=" << qtIM;
+    FCITX_WAYLAND_INFO() << "QT_IM_MODULES=" << qtsIM;
 
     std::vector<std::string> messages;
     const auto desktop = getDesktopType();
-    if (desktop == DesktopType::KDE5) {
+    if (desktop == DesktopType::KDE5 || desktop == DesktopType::KDE6) {
         if (!isWaylandIM) {
             sendMessage(
                 "wayland-diagnose-kde",
@@ -611,7 +659,9 @@ void WaylandModule::selfDiagnose() {
                   "more details see "
                   "https://fcitx-im.org/wiki/"
                   "Using_Fcitx_5_on_Wayland#KDE_Plasma"));
-        } else if (!gtkIM.empty() || !qtIM.empty()) {
+        } else if (desktop == DesktopType::KDE5 &&
+                   (!gtkIM.empty() || !qtIM.empty())) {
+            // On qt5 system, QT_IM_MODULE unset is most likely required.
             sendMessage("wayland-diagnose-kde",
                         _("Detect GTK_IM_MODULE and QT_IM_MODULE being set and "
                           "Wayland Input method frontend is working. It is "
@@ -620,6 +670,21 @@ void WaylandModule::selfDiagnose() {
                           "more details see "
                           "https://fcitx-im.org/wiki/"
                           "Using_Fcitx_5_on_Wayland#KDE_Plasma"));
+        } else if (desktop == DesktopType::KDE6) {
+            // On qt6 system, QT_IM_MODULES can be used to override QT_IM_MODULE
+            // if not empty.
+            if (!gtkIM.empty() ||
+                (!qtIM.empty() && qtsIM.find("wayland") == std::string::npos)) {
+
+                sendMessage(
+                    "wayland-diagnose-kde",
+                    _("Detect GTK_IM_MODULE and QT_IM_MODULE being set and "
+                      "Wayland Input method frontend is working. It is "
+                      "recommended to use Wayland input method frontend. For "
+                      "more details see "
+                      "https://fcitx-im.org/wiki/"
+                      "Using_Fcitx_5_on_Wayland#KDE_Plasma"));
+            }
         }
     } else if (desktop == DesktopType::GNOME) {
         if (instance_->currentUI() != "kimpanel") {
@@ -634,6 +699,8 @@ void WaylandModule::selfDiagnose() {
                   "see "
                   "https://fcitx-im.org/wiki/Using_Fcitx_5_on_Wayland#GNOME"));
         }
+    } else if (desktop == DesktopType::UKUI) {
+        // Per UkUI upstream request, do not show this message for them.
     } else {
         // It is not clear whether compositor is supported, only warn if wayland
         // im is being used..
@@ -702,4 +769,4 @@ public:
 };
 } // namespace fcitx
 
-FCITX_ADDON_FACTORY(fcitx::WaylandModuleFactory);
+FCITX_ADDON_FACTORY_V2(wayland, fcitx::WaylandModuleFactory);

@@ -6,9 +6,14 @@
  */
 
 #include "portalsettingmonitor.h"
+#include <cstddef>
 #include <memory>
 #include <string>
+#include <tuple>
+#include <utility>
 #include "fcitx-utils/dbus/bus.h"
+#include "fcitx-utils/dbus/matchrule.h"
+#include "fcitx-utils/dbus/message.h"
 #include "fcitx-utils/misc_p.h"
 #include "common.h"
 
@@ -34,7 +39,8 @@ PortalSettingMonitor::PortalSettingMonitor(dbus::Bus &bus)
                                   XDG_PORTAL_DESKTOP_SETTINGS_INTERFACE,
                                   "SettingChanged", {key.interface, key.name}),
                   [this, key](dbus::Message &msg) {
-                      std::string interface, name;
+                      std::string interface;
+                      std::string name;
                       msg >> interface >> name;
                       if (interface != key.interface || name != key.name) {
                           return true;
@@ -104,7 +110,7 @@ PortalSettingMonitor::queryValue(const PortalSettingKey &key) {
     call << key.interface << key.name;
     return call.callAsync(5000000, [this, key](dbus::Message &msg) {
         // Key does not exist.
-        auto data = findValue(watcherData_, key);
+        auto *data = findValue(watcherData_, key);
         if (!data) {
             return true;
         }
@@ -112,14 +118,14 @@ PortalSettingMonitor::queryValue(const PortalSettingKey &key) {
         // XDG portal seems didn't unwrap the variant.
         // Check this special case just in case.
         if (msg.isError()) {
-            CLASSICUI_ERROR() << "DBus call error: " << msg.errorName() << " "
+            CLASSICUI_DEBUG() << "DBus call error: " << msg.errorName() << " "
                               << msg.errorMessage();
             if (msg.errorName() == "org.freedesktop.DBus.Error.NoReply") {
                 if (data->retry < PORTAL_RETRY_LIMIT) {
                     data->retry += 1;
                     data->querySlot = queryValue(key);
                 } else {
-                    CLASSICUI_ERROR()
+                    CLASSICUI_DEBUG()
                         << "Query portal value reaches retry limit.";
                 }
             }

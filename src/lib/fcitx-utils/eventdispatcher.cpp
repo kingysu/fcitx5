@@ -5,20 +5,22 @@
  *
  */
 #include "eventdispatcher.h"
+#include <cstdint>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <queue>
-#include <stdexcept>
+#include <utility>
 #include "event.h"
-#include "misc_p.h"
+#include "eventloopinterface.h"
+#include "fs.h"
+#include "macros.h"
 #include "unixfd.h"
 
 namespace fcitx {
 class EventDispatcherPrivate {
 public:
     void dispatchEvent() {
-        uint8_t dummy;
-        while (fs::safeRead(fd_[0].fd(), &dummy, sizeof(dummy)) > 0) {
-        }
         std::queue<std::function<void()>> eventList;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -32,56 +34,46 @@ public:
         }
     }
 
-    // Mutex to be used to protect eventList_.
+    // Mutex to be used to protect fields below.
     mutable std::mutex mutex_;
     std::queue<std::function<void()>> eventList_;
-    std::unique_ptr<EventSourceIO> ioEvent_;
+    std::unique_ptr<EventSourceAsync> asyncEvent_;
     EventLoop *loop_ = nullptr;
-    UnixFD fd_[2];
 };
 
 EventDispatcher::EventDispatcher()
-    : d_ptr(std::make_unique<EventDispatcherPrivate>()) {
-    FCITX_D();
-    int selfpipe[2];
-    if (safePipe(selfpipe)) {
-        throw std::runtime_error("Failed to create pipe");
-    }
-    d->fd_[0].give(selfpipe[0]);
-    d->fd_[1].give(selfpipe[1]);
-}
+    : d_ptr(std::make_unique<EventDispatcherPrivate>()) {}
 
 EventDispatcher::~EventDispatcher() = default;
 
 void EventDispatcher::attach(EventLoop *event) {
     FCITX_D();
     std::lock_guard<std::mutex> lock(d->mutex_);
-    d->ioEvent_ = event->addIOEvent(d->fd_[0].fd(), IOEventFlag::In,
-                                    [d](EventSource *, int, IOEventFlags) {
-                                        d->dispatchEvent();
-                                        return true;
-                                    });
+    d->asyncEvent_ = event->addAsyncEvent([d](EventSource *) {
+        d->dispatchEvent();
+        return true;
+    });
     d->loop_ = event;
 }
 
 void EventDispatcher::detach() {
     FCITX_D();
     std::lock_guard<std::mutex> lock(d->mutex_);
-    d->ioEvent_.reset();
+    d->asyncEvent_.reset();
     d->loop_ = nullptr;
 }
 
 void EventDispatcher::schedule(std::function<void()> functor) {
     FCITX_D();
+    std::lock_guard<std::mutex> lock(d->mutex_);
+    // functor can be null and we will still trigger async event.
     if (functor) {
-        std::lock_guard<std::mutex> lock(d->mutex_);
-        if (!d->ioEvent_) {
+        if (!d->asyncEvent_) {
             return;
         }
         d->eventList_.push(std::move(functor));
     }
-    uint8_t dummy = 0;
-    fs::safeWrite(d->fd_[1].fd(), &dummy, 1);
+    d->asyncEvent_->send();
 }
 
 EventLoop *EventDispatcher::eventLoop() const {

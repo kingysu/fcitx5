@@ -6,9 +6,19 @@
  */
 
 #include "semver.h"
+#include <algorithm>
 #include <charconv>
+#include <cstddef>
+#include <cstdint>
+#include <iterator>
+#include <optional>
 #include <string>
-#include <fmt/format.h>
+#include <string_view>
+#include <system_error>
+#include <utility>
+#include <variant>
+#include <vector>
+#include <format>
 #include "charutils.h"
 #include "misc.h"
 #include "stringutils.h"
@@ -23,7 +33,7 @@ bool isIdChar(char c) {
 }
 
 std::optional<uint32_t> consumeNumericIdentifier(std::string_view &str) {
-    const auto *endOfNum =
+    std::string_view::iterator endOfNum =
         std::find_if_not(str.begin(), str.end(), charutils::isdigit);
     auto length = std::distance(str.begin(), endOfNum);
     if (length == 0) {
@@ -35,8 +45,8 @@ std::optional<uint32_t> consumeNumericIdentifier(std::string_view &str) {
 
     auto numberStr = str.substr(0, length);
     uint32_t number;
-    if (auto [p, ec] =
-            std::from_chars(numberStr.begin(), numberStr.end(), number);
+    if (auto [p, ec] = std::from_chars(
+            numberStr.data(), numberStr.data() + numberStr.size(), number);
         ec == std::errc()) {
         str.remove_prefix(length);
         return number;
@@ -150,7 +160,7 @@ void SemanticVersion::setMinor(uint32_t minor) { minor_ = minor; }
 void SemanticVersion::setPatch(uint32_t patch) { patch_ = patch; }
 
 std::string SemanticVersion::toString() const {
-    std::string result = fmt::format("{0}.{1}.{2}", major_, minor_, patch_);
+    std::string result = std::format("{0}.{1}.{2}", major_, minor_, patch_);
     if (!preReleaseIds_.empty()) {
         result.append("-");
         result.append(preReleaseIds_.front().toString());

@@ -6,27 +6,57 @@
  */
 
 #include "xim.h"
+#include <sys/types.h>
 #include <unistd.h>
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <iterator>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 #include <xcb-imdkit/encoding.h>
+#include <xcb-imdkit/imdkit.h>
+#include <xcb-imdkit/ximproto.h>
+#include <xcb/xcb.h>
 #include <xcb/xcb_aux.h>
+#include <xcb/xcb_ewmh.h>
+#include <xcb/xproto.h>
 #include <xkbcommon/xkbcommon.h>
+#include "fcitx-config/iniparser.h"
+#include "fcitx-utils/capabilityflags.h"
+#include "fcitx-utils/environ.h"
+#include "fcitx-utils/handlertable.h"
+#include "fcitx-utils/key.h"
+#include "fcitx-utils/keysym.h"
+#include "fcitx-utils/log.h"
+#include "fcitx-utils/macros.h"
 #include "fcitx-utils/misc.h"
 #include "fcitx-utils/misc_p.h"
+#include "fcitx-utils/rect.h"
 #include "fcitx-utils/stringutils.h"
+#include "fcitx-utils/textformatflags.h"
 #include "fcitx-utils/utf8.h"
+#include "fcitx/addonfactory.h"
+#include "fcitx/addoninstance.h"
+#include "fcitx/event.h"
 #include "fcitx/inputcontext.h"
 #include "fcitx/instance.h"
 #include "fcitx/userinterface.h"
-
-FCITX_DEFINE_LOG_CATEGORY(xim, "xim")
-FCITX_DEFINE_LOG_CATEGORY(xim_key, "xim_key")
+#include "xcb_public.h"
 
 #define XIM_DEBUG() FCITX_LOGC(::xim, Debug)
 #define XIM_KEY_DEBUG() FCITX_LOGC(::xim_key, Debug)
 
 namespace {
+
+FCITX_DEFINE_LOG_CATEGORY(xim, "xim")
+FCITX_DEFINE_LOG_CATEGORY(xim_key, "xim_key")
 
 uint32_t style_array[] = {
     XCB_IM_PreeditPosition | XCB_IM_StatusArea,    // OverTheSpot
@@ -58,9 +88,12 @@ xcb_im_styles_t onthespot_styles = {FCITX_ARRAY_SIZE(onthespot_style_array),
                                     onthespot_style_array};
 
 std::string guess_server_name() {
-    char *env = getenv("XMODIFIERS");
-    if (env && fcitx::stringutils::startsWith(env, "@im=")) {
-        return env + 4; // length of "@im="
+    const auto envValue = fcitx::getEnvironment("XMODIFIERS");
+    if (envValue) {
+        std::string_view server = *envValue;
+        if (fcitx::stringutils::consumePrefix(server, "@im=")) {
+            return std::string{server};
+        }
     }
 
     return "fcitx";
@@ -89,6 +122,15 @@ void XimLogFunc(const char *fmt, ...) {
     XIM_DEBUG() << buf.data();
 }
 
+uint32_t getWindowPid(xcb_ewmh_connection_t *ewmh, xcb_window_t w) {
+    auto cookie = xcb_ewmh_get_wm_pid(ewmh, w);
+    uint32_t pid = 0;
+    if (xcb_ewmh_get_wm_pid_reply(ewmh, cookie, &pid, nullptr) == 1) {
+        return pid;
+    }
+    return 0;
+}
+
 } // namespace
 
 class XIMServer {
@@ -104,7 +146,7 @@ public:
             conn, XCB_COPY_FROM_PARENT, serverWindow_, screen->root, 0, 0, 1, 1,
             1, XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
 
-        auto inputStyles =
+        auto *inputStyles =
             (*parent_->config().useOnTheSpot ? &onthespot_styles : &styles);
         for (uint32_t i = 0; i < inputStyles->nStyles; i++) {
             supportedStyles_.insert(inputStyles->styles[i]);
@@ -152,7 +194,7 @@ public:
         }
     }
 
-    static void callback(xcb_im_t *, xcb_im_client_t *client,
+    static void callback(xcb_im_t * /*unused*/, xcb_im_client_t *client,
                          xcb_im_input_context_t *xic,
                          const xcb_im_packet_header_fr_t *hdr, void *frame,
                          void *arg, void *user_data) {
@@ -172,6 +214,33 @@ public:
         return parent_->xcb()->call<IXCBModule::xkbState>(name_);
     }
 
+    std::string getProgramName(xcb_im_input_context_t *ic) {
+        auto w = xcb_im_input_context_get_client_window(ic);
+        if (!w) {
+            w = xcb_im_input_context_get_focus_window(ic);
+        }
+        if (w) {
+            while (w != root_) {
+                if (auto pid = getWindowPid(ewmh_, w)) {
+                    return getProcessName(pid);
+                }
+
+                auto cookie = xcb_query_tree(conn_, w);
+                auto reply = makeUniqueCPtr(
+                    xcb_query_tree_reply(conn_, cookie, nullptr));
+                if (!reply) {
+                    break;
+                }
+                // This should never happen, but just as a sanity check.
+                if (reply->root != root_ || w == reply->parent) {
+                    break;
+                }
+                w = reply->parent;
+            }
+        }
+        return {};
+    }
+
 private:
     xcb_connection_t *conn_;
     FocusGroup *group_;
@@ -188,47 +257,11 @@ private:
     UniqueCPtr<struct xkb_state, xkb_state_unref> localState_;
 };
 
-pid_t getWindowPid(xcb_ewmh_connection_t *ewmh, xcb_window_t w) {
-    auto cookie = xcb_ewmh_get_wm_pid(ewmh, w);
-    uint32_t pid = 0;
-    if (xcb_ewmh_get_wm_pid_reply(ewmh, cookie, &pid, nullptr) == 1) {
-        return pid;
-    }
-    return 0;
-}
-
-std::string getProgramName(XIMServer *server, xcb_im_input_context_t *ic) {
-    auto w = xcb_im_input_context_get_client_window(ic);
-    if (!w) {
-        w = xcb_im_input_context_get_focus_window(ic);
-    }
-    if (w) {
-        while (w != server->root()) {
-            if (auto pid = getWindowPid(server->ewmh(), w)) {
-                return getProcessName(pid);
-            }
-
-            auto cookie = xcb_query_tree(server->conn(), w);
-            auto reply = makeUniqueCPtr(
-                xcb_query_tree_reply(server->conn(), cookie, nullptr));
-            if (!reply) {
-                break;
-            }
-            // This should never happen, but just as a sanity check.
-            if (reply->root != server->root() || w == reply->parent) {
-                break;
-            }
-            w = reply->parent;
-        }
-    }
-    return {};
-}
-
 class XIMInputContext final : public InputContext {
 public:
     XIMInputContext(InputContextManager &inputContextManager, XIMServer *server,
                     xcb_im_input_context_t *ic, bool useUtf8)
-        : InputContext(inputContextManager, getProgramName(server, ic)),
+        : InputContext(inputContextManager, server->getProgramName(ic)),
           server_(server), xic_(ic), useUtf8_(useUtf8) {
         setFocusGroup(server->focusGroup());
         xcb_im_input_context_set_data(xic_, this, nullptr);
@@ -248,15 +281,15 @@ public:
 
     uint32_t validatedInputStyle() {
         auto style = xcb_im_input_context_get_input_style(xic_);
-        if (server_->supportedStyles().count(style)) {
+        if (server_->supportedStyles().contains(style)) {
             return style;
         }
         auto preeditStyle = (style & 0xff) | XCB_IM_StatusNothing;
-        if (server_->supportedStyles().count(preeditStyle)) {
+        if (server_->supportedStyles().contains(preeditStyle)) {
             return preeditStyle;
         }
         auto statusStyle = (style & 0xff00) | XCB_IM_PreeditNothing;
-        if (server_->supportedStyles().count(statusStyle)) {
+        if (server_->supportedStyles().contains(statusStyle)) {
             return statusStyle;
         }
 
@@ -275,10 +308,7 @@ public:
 
     void updateCursorLocation() {
         // kinds of like notification for position moving
-        bool hasSpotLocation =
-            xcb_im_input_context_get_preedit_attr_mask(xic_) &
-            XCB_XIM_XNSpotLocation_MASK;
-        auto p = xcb_im_input_context_get_preedit_attr(xic_)->spot_location;
+        auto mask = xcb_im_input_context_get_preedit_attr_mask(xic_);
         auto w = xcb_im_input_context_get_focus_window(xic_);
         if (!w) {
             w = xcb_im_input_context_get_client_window(xic_);
@@ -286,7 +316,20 @@ public:
         if (!w) {
             return;
         }
-        if (hasSpotLocation) {
+        if (mask & XCB_XIM_XNArea_MASK) {
+            auto a = xcb_im_input_context_get_preedit_attr(xic_)->area;
+            auto trans_cookie = xcb_translate_coordinates(
+                server_->conn(), w, server_->root(), a.x, a.y);
+            auto reply = makeUniqueCPtr(xcb_translate_coordinates_reply(
+                server_->conn(), trans_cookie, nullptr));
+            if (!reply) {
+                return;
+            }
+            setCursorRect(Rect()
+                              .setPosition(reply->dst_x, reply->dst_y)
+                              .setSize(a.width, a.height));
+        } else if (mask & XCB_XIM_XNSpotLocation_MASK) {
+            auto p = xcb_im_input_context_get_preedit_attr(xic_)->spot_location;
             auto trans_cookie = xcb_translate_coordinates(
                 server_->conn(), w, server_->root(), p.x, p.y);
             auto reply = makeUniqueCPtr(xcb_translate_coordinates_reply(
@@ -378,7 +421,8 @@ protected:
         xcb_im_commit_string(server_->im(), xic_, XCB_XIM_LOOKUP_CHARS, commit,
                              length, 0);
     }
-    void deleteSurroundingTextImpl(int, unsigned int) override {}
+    void deleteSurroundingTextImpl(int /*offset*/,
+                                   unsigned int /*size*/) override {}
     void forwardKeyImpl(const ForwardKeyEvent &key) override {
         xcb_key_press_event_t xcbEvent;
         memset(&xcbEvent, 0, sizeof(xcb_key_press_event_t));
@@ -392,8 +436,8 @@ protected:
             xkb_state *xkbState = server_->xkbState();
             if (xkbState) {
                 auto *map = xkb_state_get_keymap(xkbState);
-                auto min = xkb_keymap_min_keycode(map),
-                     max = xkb_keymap_max_keycode(map);
+                auto min = xkb_keymap_min_keycode(map);
+                auto max = xkb_keymap_max_keycode(map);
                 for (auto keyCode = min; keyCode < max; keyCode++) {
                     if (xkb_state_key_get_one_sym(xkbState, keyCode) ==
                         static_cast<uint32_t>(key.rawKey().sym())) {
@@ -405,8 +449,7 @@ protected:
         }
         xcbEvent.root = server_->root();
         xcbEvent.event = xcb_im_input_context_get_focus_window(xic_);
-        if ((xcbEvent.event = xcb_im_input_context_get_focus_window(xic_)) ==
-            XCB_WINDOW_NONE) {
+        if (xcbEvent.event == XCB_WINDOW_NONE) {
             xcbEvent.event = xcb_im_input_context_get_client_window(xic_);
         }
         xcbEvent.child = XCB_WINDOW_NONE;
@@ -532,6 +575,8 @@ void XIMServer::callback(xcb_im_client_t *client, xcb_im_input_context_t *xic,
         XIM_DEBUG() << "Client disconnect: " << client;
         clientEncodingMapping_.erase(client);
         return;
+    default:
+        break;
     }
 
     if (!xic) {
@@ -551,7 +596,7 @@ void XIMServer::callback(xcb_im_client_t *client, xcb_im_input_context_t *xic,
     switch (hdr->major_opcode) {
     case XCB_XIM_CREATE_IC: {
         bool useUtf8 = false;
-        if (auto entry = findValue(clientEncodingMapping_, client);
+        if (auto *entry = findValue(clientEncodingMapping_, client);
             entry && *entry) {
             useUtf8 = true;
         }
@@ -576,14 +621,22 @@ void XIMServer::callback(xcb_im_client_t *client, xcb_im_input_context_t *xic,
                                 xkb_state_get_keymap(state)) {
             localState_.reset(xkb_state_new(keymap));
         }
-        xcb_key_press_event_t *xevent =
-            static_cast<xcb_key_press_event_t *>(arg);
+        auto *xevent = static_cast<xcb_key_press_event_t *>(arg);
         auto layout =
             xkb_state_serialize_layout(state, XKB_STATE_LAYOUT_EFFECTIVE);
         // Always use the state that is forwarded by client.
         // For xkb_state_key_get_one_sym, no need to distinguish
         // depressed/latched/locked.
-        xkb_state_update_mask(localState_.get(), xevent->state, 0, 0, 0, 0,
+
+        // Remove all button mask before send to XKB.
+        // XKB May have internal virtual state bit, which collides with this
+        // bits. See: https://github.com/fcitx/fcitx5/issues/1106
+        constexpr uint16_t button_mask = XCB_BUTTON_MASK_1 | XCB_BUTTON_MASK_2 |
+                                         XCB_BUTTON_MASK_3 | XCB_BUTTON_MASK_4 |
+                                         XCB_BUTTON_MASK_5;
+
+        xkb_state_update_mask(localState_.get(),
+                              (xevent->state & (~button_mask)), 0, 0, 0, 0,
                               layout);
         KeyEvent event(ic,
                        Key(static_cast<KeySym>(xkb_state_key_get_one_sym(
@@ -594,6 +647,8 @@ void XIMServer::callback(xcb_im_client_t *client, xcb_im_input_context_t *xic,
         XIM_KEY_DEBUG() << "XIM Key Event: "
                         << static_cast<int>(xevent->response_type) << " "
                         << event.rawKey().toString() << " time:" << xevent->time
+                        << " detail: " << static_cast<int>(xevent->detail)
+                        << " state: " << xevent->state
                         << " sequence:" << xevent->sequence;
         if (!ic->hasFocus()) {
             ic->focusIn();
@@ -620,6 +675,8 @@ void XIMServer::callback(xcb_im_client_t *client, xcb_im_input_context_t *xic,
         ic->resetAutoRepeatState();
         ic->focusOut();
         break;
+    default:
+        break;
     }
 }
 
@@ -642,10 +699,10 @@ XIMModule::XIMModule(Instance *instance) : instance_(instance) {
         EventType::InputContextFlushUI, EventWatcherPhase::PreInputMethod,
         [](Event &event) {
             auto &uiEvent = static_cast<InputContextFlushUIEvent &>(event);
-            auto ic = uiEvent.inputContext();
+            auto *ic = uiEvent.inputContext();
             if (uiEvent.component() == UserInterfaceComponent::InputPanel &&
                 ic->frontendName() == "xim") {
-                auto xic = static_cast<XIMInputContext *>(ic);
+                auto *xic = static_cast<XIMInputContext *>(ic);
                 xic->maybeUpdateCursorLocationForRootStyle();
             }
         });
@@ -663,4 +720,4 @@ public:
 };
 } // namespace fcitx
 
-FCITX_ADDON_FACTORY(fcitx::XIMModuleFactory);
+FCITX_ADDON_FACTORY_V2(xim, fcitx::XIMModuleFactory);

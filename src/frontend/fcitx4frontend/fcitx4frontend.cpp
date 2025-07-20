@@ -6,18 +6,46 @@
  */
 
 #include "fcitx4frontend.h"
+#include <unistd.h>
+#include <charconv>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <tuple>
+#include <vector>
+#include "fcitx-utils/capabilityflags.h"
+#include "fcitx-utils/dbus/bus.h"
 #include "fcitx-utils/dbus/message.h"
 #include "fcitx-utils/dbus/objectvtable.h"
 #include "fcitx-utils/dbus/servicewatcher.h"
-#include "fcitx-utils/metastring.h"
-#include "fcitx-utils/standardpath.h"
+#include "fcitx-utils/flags.h"
+#include "fcitx-utils/fs.h"
+#include "fcitx-utils/handlertable.h"
+#include "fcitx-utils/key.h"
+#include "fcitx-utils/rect.h"
+#include "fcitx-utils/standardpaths.h"
+#include "fcitx-utils/stringutils.h"
+#include "fcitx-utils/textformatflags.h"
+#include "fcitx/addonfactory.h"
+#include "fcitx/addoninstance.h"
+#include "fcitx/event.h"
 #include "fcitx/inputcontext.h"
 #include "fcitx/inputmethodentry.h"
 #include "fcitx/inputmethodmanager.h"
 #include "fcitx/inputpanel.h"
 #include "fcitx/instance.h"
 #include "fcitx/misc_p.h"
+#include "fcitx/text.h"
 #include "dbus_public.h"
+
+#ifdef ENABLE_X11
+#include <xcb/xcb.h>
+#include "xcb_public.h"
+#endif
 
 #define FCITX_INPUTMETHOD_DBUS_INTERFACE "org.fcitx.Fcitx.InputMethod"
 #define FCITX_INPUTCONTEXT_DBUS_INTERFACE "org.fcitx.Fcitx.InputContext"
@@ -40,24 +68,25 @@ buildFormattedTextVector(const Text &text) {
     return vector;
 }
 
-int getDisplayNumber(const std::string &var) {
+int getDisplayNumber(std::string_view var) {
     auto pos = var.find(':');
-    if (pos == std::string::npos) {
+    if (pos == std::string_view::npos) {
         return 0;
     }
     // skip :
     pos += 1;
     // Handle address like :0.0
     auto period = var.find(pos, '.');
-    if (period != std::string::npos) {
+    if (period != std::string_view::npos) {
         period -= pos;
     }
 
-    try {
-        std::string num(var.substr(pos, period));
-        int displayNumber = std::stoi(num);
+    std::string_view num(var.substr(pos, period));
+    int displayNumber;
+    if (std::from_chars(num.data(), num.data() + num.size(), displayNumber)
+            .ec == std::errc()) {
+
         return displayNumber;
-    } catch (...) {
     }
     return 0;
 }
@@ -78,10 +107,10 @@ public:
         bus_->requestName(dbusServiceName, requestFlag);
 
         auto localMachineId = getLocalMachineId(/*fallback=*/"machine-id");
-        auto path = stringutils::joinPath(
-            "fcitx", "dbus", stringutils::concat(localMachineId, "-", display));
-        bool res = StandardPath::global().safeSave(
-            StandardPath::Type::Config, path, [this](int fd) {
+        auto path = std::filesystem::path("fcitx") / "dbus" /
+                    stringutils::concat(localMachineId, "-", display);
+        bool res = StandardPaths::global().safeSave(
+            StandardPathsType::Config, path, [this](int fd) {
                 auto address = bus_->address();
                 fs::safeWrite(fd, address.c_str(), address.size() + 1);
                 // Because fcitx5 don't launch dbus by itself, we write 0
@@ -94,16 +123,15 @@ public:
         if (res) {
             // Failed to write address file does not matter if we could use
             // regular dbus.
-            pathWrote_ =
-                stringutils::joinPath(StandardPath::global().userDirectory(
-                                          StandardPath::Type::Config),
-                                      path);
+            pathWrote_ = StandardPaths::global().userDirectory(
+                             StandardPathsType::Config) /
+                         path;
         }
     }
 
     ~Fcitx4InputMethod() override {
         if (!pathWrote_.empty()) {
-            unlink(pathWrote_.data());
+            unlink(pathWrote_.c_str());
         }
     }
 
@@ -121,7 +149,7 @@ private:
     Fcitx4FrontendModule *module_;
     Instance *instance_;
     std::unique_ptr<dbus::Bus> bus_;
-    std::string pathWrote_;
+    std::filesystem::path pathWrote_;
 };
 
 class Fcitx4InputContext : public InputContext,
@@ -185,7 +213,7 @@ public:
 
     void closeInputContext() {}
 
-    void mouseEvent(int) {}
+    void mouseEvent(int /*unused*/) {}
 
     void setCursorLocation(int x, int y) {
         CHECK_SENDER_OR_RETURN;
@@ -290,7 +318,7 @@ Fcitx4InputMethod::createICv3(const std::string &appname, int /*pid*/) {
     int icid = module_->nextIcIdx();
     auto *ic = new Fcitx4InputContext(icid, instance_->inputContextManager(),
                                       this, sender, appname);
-    auto group =
+    auto *group =
         instance_->defaultFocusGroup(stringutils::concat("x11::", display_));
     if (!group) {
         group = instance_->defaultFocusGroup("x11:");
@@ -366,4 +394,4 @@ public:
 };
 } // namespace fcitx
 
-FCITX_ADDON_FACTORY(fcitx::Fcitx4FrontendModuleFactory);
+FCITX_ADDON_FACTORY_V2(fcitx4frontend, fcitx::Fcitx4FrontendModuleFactory);

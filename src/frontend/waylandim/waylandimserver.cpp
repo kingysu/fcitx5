@@ -6,15 +6,42 @@
  */
 #include "waylandimserver.h"
 #include <sys/mman.h>
+#include <sys/types.h>
+#include <unistd.h>
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <memory>
+#include <string>
+#include <string_view>
+#include <tuple>
+#include <utility>
+#include <wayland-client-core.h>
+#include <wayland-client-protocol.h>
+#include <wayland-util.h>
+#include <xkbcommon/xkbcommon.h>
+#include "fcitx-utils/capabilityflags.h"
+#include "fcitx-utils/event.h"
+#include "fcitx-utils/eventloopinterface.h"
+#include "fcitx-utils/key.h"
+#include "fcitx-utils/keysym.h"
 #include "fcitx-utils/macros.h"
+#include "fcitx-utils/textformatflags.h"
 #include "fcitx-utils/utf8.h"
+#include "fcitx/event.h"
+#include "fcitx/focusgroup.h"
+#include "fcitx/inputcontext.h"
+#include "fcitx/inputcontextmanager.h"
+#include "fcitx/instance.h"
 #include "virtualinputcontext.h"
 #include "wayland-text-input-unstable-v1-client-protocol.h"
 #include "wayland_public.h"
 #include "waylandim.h"
+#include "waylandimserverbase.h"
 #include "wl_seat.h"
+#include "zwp_input_method_context_v1.h"
+#include "zwp_input_method_v1.h"
 
 #ifdef __linux__
 #include <linux/input-event-codes.h>
@@ -470,7 +497,7 @@ void WaylandIMInputContextV1::keyCallback(uint32_t serial, uint32_t time,
             // Let's trick the key event system by fake our first.
             // Remove 100 from the initial interval.
             timeEvent_->setNextInterval(std::max(
-                0, std::max(0, repeatDelay() * 1000 - repeatHackDelay)));
+                0, std::max(0, (repeatDelay() * 1000) - repeatHackDelay)));
             timeEvent_->setOneShot();
         }
     }
@@ -490,7 +517,7 @@ void WaylandIMInputContextV1::keyCallback(uint32_t serial, uint32_t time,
         WAYLANDIM_DEBUG() << "Engine handling speed can not keep up with key "
                              "repetition rate.";
         timeEvent_->setNextInterval(
-            std::clamp(repeatDelay() * 1000 - repeatHackDelay, 0, 1000));
+            std::clamp((repeatDelay() * 1000) - repeatHackDelay, 0, 1000));
     }
 }
 void WaylandIMInputContextV1::modifiersCallback(uint32_t serial,
@@ -546,6 +573,8 @@ void WaylandIMInputContextV1::modifiersCallback(uint32_t serial,
     if (mask & server_->stateMask_.meta_mask) {
         server_->modifiers_ |= KeyState::Meta;
     }
+
+    ic_->modifiers(serial_, mods_depressed, mods_latched, mods_locked, group);
 }
 
 // This is not sent by either kwin/weston, but since it's unclear whether any
@@ -601,8 +630,16 @@ void WaylandIMInputContextV1::updatePreeditDelegate(InputContext *ic) const {
             index += preedit.stringAt(i).size();
         }
     }
-    ic_->preeditString(serial_, preedit.toString().c_str(),
-                       preedit.toStringForCommit().c_str());
+    const std::string preeditString = preedit.toString();
+    const std::string preeditCommitString = preedit.toStringForCommit();
+    // Avoid hitting wayland message limit.
+    if (preeditString.size() + preeditCommitString.size() >=
+        WaylandIMServerBase::safeStringLimit) {
+        return;
+    }
+
+    ic_->preeditString(serial_, preeditString.c_str(),
+                       preeditCommitString.c_str());
 }
 
 void WaylandIMInputContextV1::deleteSurroundingTextDelegate(

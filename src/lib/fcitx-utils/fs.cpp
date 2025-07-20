@@ -7,23 +7,47 @@
 
 #include "fs.h"
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 #include <algorithm>
 #include <cerrno>
-#include "mtime_p.h"
-#include "standardpath.h"
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <iterator>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include "misc.h"
 #include "stringutils.h"
+#include "unixfd.h"
+#include "utf8.h" // IWYU pragma: keep
+
+#ifdef _WIN32
+#include <wchar.h>
+#endif
 
 namespace fcitx::fs {
 
 namespace {
 
-bool makePathHelper(const std::string &name) {
-    if (::mkdir(name.c_str(), 0777) == 0) {
+int makeDir(const std::filesystem::path &name) {
+#ifdef _WIN32
+    return ::_wmkdir(name.c_str());
+#else
+    return ::mkdir(name.c_str(), 0777);
+#endif
+}
+
+bool makePathHelper(const std::filesystem::path &name) {
+    if (makeDir(name) == 0) {
         return true;
     }
     if (errno == EEXIST) {
-        return isdir(name);
+        std::error_code ec;
+        return std::filesystem::is_directory(name, ec);
     }
 
     // Check if error is parent not exists.
@@ -31,22 +55,20 @@ bool makePathHelper(const std::string &name) {
         return false;
     }
 
-    // Try to create because parent doesn't exist.
-    auto pos = name.rfind('/');
-    if (pos == std::string::npos || pos == 0 || name[pos - 1] == '/') {
+    if (!name.has_parent_path()) {
         return false;
     }
 
-    std::string parent = name.substr(0, pos);
+    const auto parent = name.parent_path();
     if (!makePathHelper(parent)) {
         return false;
     }
 
     // try again
-    if (::mkdir(name.c_str(), 0777) == 0) {
+    if (makeDir(name) == 0) {
         return true;
     }
-    return errno == EEXIST && isdir(name);
+    return errno == EEXIST && std::filesystem::is_directory(name);
 }
 
 } // namespace
@@ -70,8 +92,13 @@ bool isexe(const std::string &path) {
 }
 
 bool islnk(const std::string &path) {
+#ifdef _WIN32
+    FCITX_UNUSED(path);
+    return false;
+#else
     struct stat stats;
     return lstat(path.c_str(), &stats) == 0 && S_ISLNK(stats.st_mode);
+#endif
 }
 
 std::string cleanPath(const std::string &path) {
@@ -149,15 +176,12 @@ std::string cleanPath(const std::string &path) {
     return buf;
 }
 
-bool makePath(const std::string &path) {
-    if (isdir(path)) {
+bool makePath(const std::filesystem::path &path) {
+    std::error_code ec;
+    if (std::filesystem::is_directory(path, ec)) {
         return true;
     }
-    auto opath = cleanPath(path);
-    while (!opath.empty() && opath.back() == '/') {
-        opath.pop_back();
-    }
-
+    auto opath = path.lexically_normal();
     if (opath.empty()) {
         return true;
     }
@@ -188,21 +212,20 @@ std::string dirName(const std::string &path) {
     return result;
 }
 
-std::string baseName(const std::string &path) {
-    auto result = path;
+std::string baseName(std::string_view path) {
     // remove trailing slash
-    while (result.size() > 1 && result.back() == '/') {
-        result.pop_back();
+    while (path.size() > 1 && path.back() == '/') {
+        path.remove_suffix(1);
     }
-    if (result.size() <= 1) {
-        return result;
+    if (path.size() <= 1) {
+        return std::string{path};
     }
 
-    auto iter = std::find(result.rbegin(), result.rend(), '/');
-    if (iter != result.rend()) {
-        result.erase(result.begin(), iter.base());
+    auto iter = std::find(path.rbegin(), path.rend(), '/');
+    if (iter != path.rend()) {
+        path.remove_prefix(std::distance(path.begin(), iter.base()));
     }
-    return result;
+    return std::string{path};
 }
 
 ssize_t safeRead(int fd, void *data, size_t maxlen) {
@@ -221,6 +244,9 @@ ssize_t safeWrite(int fd, const void *data, size_t maxlen) {
 }
 
 std::optional<std::string> readlink(const std::string &path) {
+#ifdef _WIN32
+    FCITX_UNUSED(path);
+#else
     std::string buffer;
     buffer.resize(256);
     ssize_t readSize;
@@ -238,19 +264,22 @@ std::optional<std::string> readlink(const std::string &path) {
 
         buffer.resize(buffer.size() * 2);
     }
+#endif
     return std::nullopt;
 }
 
-int64_t modifiedTime(const std::string &path) {
-    struct stat stats;
-    if (stat(path.c_str(), &stats) != 0) {
-        return 0;
-    }
-    return fcitx::modifiedTime(stats).sec;
+int64_t modifiedTime(const std::filesystem::path &path) {
+    std::error_code ec;
+    auto time = std::filesystem::last_write_time(path, ec);
+    auto systime =
+        !ec ? std::filesystem::file_time_type::clock::to_sys(time)
+            : std::chrono::time_point<std::chrono::system_clock>::min();
+    auto timeInSeconds =
+        std::chrono::time_point_cast<std::chrono::seconds>(systime);
+    return timeInSeconds.time_since_epoch().count();
 }
 
-template <typename FDLike>
-UniqueFilePtr openFDImpl(FDLike &fd, const char *modes) {
+UniqueFilePtr openFD(UnixFD &fd, const char *modes) {
     if (!fd.isValid()) {
         return nullptr;
     }
@@ -259,14 +288,6 @@ UniqueFilePtr openFDImpl(FDLike &fd, const char *modes) {
         fd.release();
     }
     return file;
-}
-
-UniqueFilePtr openFD(UnixFD &fd, const char *modes) {
-    return openFDImpl(fd, modes);
-}
-
-UniqueFilePtr openFD(StandardPathFile &file, const char *modes) {
-    return openFDImpl(file, modes);
 }
 
 } // namespace fcitx::fs

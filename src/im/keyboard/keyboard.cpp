@@ -8,6 +8,7 @@
 #include "keyboard.h"
 #include <strings.h>
 #include <cstddef>
+#include <filesystem>
 #include <functional>
 #include <iterator>
 #include <memory>
@@ -18,23 +19,25 @@
 #include <tuple>
 #include <utility>
 #include <vector>
-#include <fmt/core.h>
-#include <fmt/format.h>
+#include <format>
 #include <xkbcommon/xkbcommon.h>
 #include "fcitx-config/iniparser.h"
 #include "fcitx-config/rawconfig.h"
 #include "fcitx-utils/capabilityflags.h"
 #include "fcitx-utils/event.h"
+#include "fcitx-utils/eventloopinterface.h"
 #include "fcitx-utils/i18n.h"
 #include "fcitx-utils/key.h"
 #include "fcitx-utils/keysym.h"
 #include "fcitx-utils/keysymgen.h"
+#include "fcitx-utils/log.h"
 #include "fcitx-utils/macros.h"
 #include "fcitx-utils/misc.h"
 #include "fcitx-utils/misc_p.h"
 #include "fcitx-utils/stringutils.h"
 #include "fcitx-utils/textformatflags.h"
 #include "fcitx-utils/utf8.h"
+#include "fcitx/addoninstance.h"
 #include "fcitx/candidatelist.h"
 #include "fcitx/event.h"
 #include "fcitx/inputcontext.h"
@@ -208,7 +211,7 @@ KeyboardEngine::KeyboardEngine(Instance *instance) : instance_(instance) {
 
     UniqueCPtr<xkb_context, xkb_context_unref> xkbContext(
         xkb_context_new(XKB_CONTEXT_NO_FLAGS));
-    std::vector<std::string> directories;
+    std::vector<std::filesystem::path> directories;
     if (xkbContext) {
         for (unsigned int i = 0,
                           e = xkb_context_num_include_paths(xkbContext.get());
@@ -220,8 +223,13 @@ KeyboardEngine::KeyboardEngine(Instance *instance) : instance_(instance) {
     if (directories.empty()) {
         directories.push_back(XKEYBOARDCONFIG_XKBBASE);
     }
+    FCITX_INFO() << "Attempting to load keyboard from: " << directories
+                 << " Rule: " << DEFAULT_XKB_RULES;
     if (!xkbRules_.read(directories, ruleName, extraRuleFile)) {
-        xkbRules_.read(directories, DEFAULT_XKB_RULES, "");
+        FCITX_WARN() << "Fallback to using compile time rule: "
+                     << XKEYBOARDCONFIG_XKBBASE
+                     << " Rule: " << DEFAULT_XKB_RULES;
+        xkbRules_.read({XKEYBOARDCONFIG_XKBBASE}, DEFAULT_XKB_RULES, "");
     }
 
     instance_->inputContextManager().registerProperty("keyboardState",
@@ -248,8 +256,7 @@ std::vector<InputMethodEntry> KeyboardEngine::listInputMethods() {
         auto language = findBestLanguage(isoCodes, layoutInfo.description,
                                          layoutInfo.languages);
         auto description =
-            fmt::format(_("Keyboard - {0}"),
-                        D_("xkeyboard-config", layoutInfo.description));
+            _("Keyboard - {0}", D_("xkeyboard-config", layoutInfo.description));
         auto uniqueName = imNamePrefix + layoutInfo.name;
         if (uniqueName == "keyboard-us") {
             usExists = true;
@@ -267,9 +274,9 @@ std::vector<InputMethodEntry> KeyboardEngine::listInputMethods() {
                                                  ? variantInfo.languages
                                                  : layoutInfo.languages);
             auto description =
-                fmt::format(_("Keyboard - {0} - {1}"),
-                            D_("xkeyboard-config", layoutInfo.description),
-                            D_("xkeyboard-config", variantInfo.description));
+                _("Keyboard - {0} - {1}",
+                  D_("xkeyboard-config", layoutInfo.description),
+                  D_("xkeyboard-config", variantInfo.description));
             auto uniqueName = stringutils::concat(imNamePrefix, layoutInfo.name,
                                                   "-", variantInfo.name);
 
@@ -282,7 +289,7 @@ std::vector<InputMethodEntry> KeyboardEngine::listInputMethods() {
             // chr. So "chr (chr)" would be redundant in this case.
             if (variantLabel != variantInfo.name) {
                 variantLabel =
-                    fmt::format("{0} ({1})", variantLabel, variantInfo.name);
+                    std::format("{0} ({1})", variantLabel, variantInfo.name);
             }
             result.push_back(std::move(
                 InputMethodEntry(uniqueName, description, language, "keyboard")
@@ -307,10 +314,9 @@ std::vector<InputMethodEntry> KeyboardEngine::listInputMethods() {
                     usExists = true;
                 }
                 result.push_back(
-                    std::move(InputMethodEntry(
-                                  uniqueName,
-                                  fmt::format(_("{0} (Not Available)"), *desc),
-                                  *lang, "keyboard")
+                    std::move(InputMethodEntry(uniqueName,
+                                               _("{0} (Not Available)", *desc),
+                                               *lang, "keyboard")
                                   .setLabel(*label)
                                   .setIcon("input-keyboard")));
             }
@@ -379,7 +385,7 @@ static inline bool isValidSym(const Key &key) {
         return false;
     }
 
-    return validSyms.count(key.sym());
+    return validSyms.contains(key.sym());
 }
 
 static KeyList FCITX_HYPHEN_APOS = Key::keyListFromString("minus apostrophe");
@@ -435,15 +441,18 @@ void KeyboardEngine::keyEvent(const InputMethodEntry &entry, KeyEvent &event) {
     // Always update preedit after key event.
     Finally finally([state]() { state->setPreedit(); });
     if (state->handleLongPress(event)) {
-        return event.filterAndAccept();
+        event.filterAndAccept();
+        return;
     }
 
     if (state->handleSpellModeTrigger(entry, event)) {
-        return event.filterAndAccept();
+        event.filterAndAccept();
+        return;
     }
 
     if (state->handleCandidateSelection(event)) {
-        return event.filterAndAccept();
+        event.filterAndAccept();
+        return;
     }
 
     if (event.key().check(FcitxKey_BackSpace)) {
@@ -453,7 +462,7 @@ void KeyboardEngine::keyEvent(const InputMethodEntry &entry, KeyEvent &event) {
         return;
     }
 
-    // Do not feed key into compose or buffer if it is a combinition key.
+    // Do not feed key into compose or buffer if it is a combination key.
     // Shift/Alt are ignored because of normalize does not always remove shift.
     if (event.key().states().testAny(
             KeyStates{KeyState::Ctrl, KeyState::Super})) {
@@ -464,7 +473,7 @@ void KeyboardEngine::keyEvent(const InputMethodEntry &entry, KeyEvent &event) {
     auto range = utf8::MakeUTF8CharRange(compose);
     for (auto i = std::begin(range); i != std::end(range); ++i) {
         // If char will break the word, commit the compose char.
-        if (!validChars.count(*i) || !state->updateBuffer(i.view())) {
+        if (!validChars.contains(*i) || !state->updateBuffer(i.view())) {
             state->commitBuffer();
             inputContext->commitString(std::string(i.view()));
         }
@@ -479,14 +488,16 @@ void KeyboardEngine::keyEvent(const InputMethodEntry &entry, KeyEvent &event) {
           event.key().checkKeyList(FCITX_HYPHEN_APOS)))) {
         auto text = Key::keySymToUTF8(event.key().sym());
         if (!text.empty() && state->updateBuffer(text)) {
-            return event.filterAndAccept();
+            event.filterAndAccept();
+            return;
         }
     }
 
     // At this point, compose is already handled. The remaining is key event
     // and now we want to forward key.
     if (consumeKey) {
-        return event.filterAndAccept();
+        event.filterAndAccept();
+        return;
     }
 
     // if we reach here, just commit and discard buffer.
@@ -841,7 +852,6 @@ std::string KeyboardEngineState::preeditString() const {
 
 std::string KeyboardEngineState::currentSelection() const {
     auto candidateList = inputContext_->inputPanel().candidateList();
-    std::string preedit;
     if (mode_ == CandidateMode::Hint) {
         if (candidateList && candidateList->cursorIndex() >= 0) {
             if (const auto *candidate =
@@ -940,3 +950,5 @@ bool KeyboardEngineState::handleBackspace(const InputMethodEntry &entry) {
 }
 
 } // namespace fcitx
+
+FCITX_ADDON_FACTORY_V2(keyboard, fcitx::KeyboardEngineFactory);

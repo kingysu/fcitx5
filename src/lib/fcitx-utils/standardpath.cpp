@@ -13,6 +13,7 @@
 #include <unistd.h>
 #include <algorithm>
 #include <atomic>
+#include <cassert>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -21,6 +22,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -29,12 +31,18 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
-#include "config.h"
+#include "config.h" // IWYU pragma: keep
+#include "environ.h"
 #include "fs.h"
 #include "macros.h"
 #include "misc.h"
 #include "misc_p.h"
 #include "stringutils.h"
+
+#ifdef _WIN32
+#include <io.h>
+#include "utf8.h"
+#endif
 
 #if __has_include(<paths.h>)
 #include <paths.h>
@@ -80,7 +88,11 @@ void StandardPathTempFile::removeTemp() {
 void StandardPathTempFile::close() {
     if (fd_.fd() >= 0) {
         // sync first.
+#ifdef _WIN32
+        _commit(fd_.fd());
+#else
         fsync(fd_.fd());
+#endif
         fd_.reset();
         if (rename(tempPath_.c_str(), path_.c_str()) < 0) {
             unlink(tempPath_.c_str());
@@ -128,9 +140,10 @@ public:
             stringutils::join(pkgdataDirFallback, ":").c_str(), builtInPathMap,
             skipBuiltInPath_ ? nullptr : "pkgdatadir");
         cacheHome_ = defaultPath("XDG_CACHE_HOME", ".cache");
-        const char *tmpdir = getenv("TMPDIR");
-        runtimeDir_ = defaultPath("XDG_RUNTIME_DIR",
-                                  !tmpdir || !tmpdir[0] ? "/tmp" : tmpdir);
+        auto tmpdir = getEnvironment("TMPDIR");
+        runtimeDir_ =
+            defaultPath("XDG_RUNTIME_DIR",
+                        (!tmpdir || tmpdir->empty()) ? "/tmp" : tmpdir->data());
         // Though theoratically, this is also fcitxPath, we just simply don't
         // use it here.
         addonDirs_ = defaultPaths("FCITX_ADDON_DIRS", FCITX_INSTALL_ADDONDIR,
@@ -195,23 +208,27 @@ public:
 private:
     // http://standards.freedesktop.org/basedir-spec/basedir-spec-latest.html
     static std::string defaultPath(const char *env, const char *defaultPath) {
-        char *cdir = nullptr;
+        std::optional<std::string> cdir;
         if (env) {
-            cdir = getenv(env);
+            cdir = getEnvironment(env);
         }
         std::string dir;
-        if (cdir && cdir[0]) {
-            dir = cdir;
+        if (cdir && !cdir->empty()) {
+            dir = *cdir;
         } else {
             // caller need to ensure HOME is not empty;
             if (defaultPath[0] != '/') {
-                const char *home = getenv("HOME");
+                auto home = getEnvironment("HOME");
                 if (!home) {
                     throw std::runtime_error("Home is not set");
                 }
-                dir = stringutils::joinPath(home, defaultPath);
+                dir = stringutils::joinPath(*home, defaultPath);
             } else {
                 if (env && strcmp(env, "XDG_RUNTIME_DIR") == 0) {
+#ifdef _WIN32
+                    dir = stringutils::joinPath(
+                        defaultPath, stringutils::concat("fcitx-runtime"));
+#else
                     dir = stringutils::joinPath(
                         defaultPath,
                         stringutils::concat("fcitx-runtime-", geteuid()));
@@ -220,12 +237,14 @@ private:
                             return {};
                         }
                     }
+#endif
                 } else {
                     dir = defaultPath;
                 }
             }
         }
 
+#ifndef _WIN32
         if (!dir.empty() && env && strcmp(env, "XDG_RUNTIME_DIR") == 0) {
             struct stat buf;
             if (stat(dir.c_str(), &buf) != 0 || buf.st_uid != geteuid() ||
@@ -233,6 +252,7 @@ private:
                 return {};
             }
         }
+#endif
         return dir;
     }
 
@@ -242,15 +262,16 @@ private:
         const char *builtInPathType) {
         std::vector<std::string> dirs;
 
-        const char *dir = nullptr;
+        std::optional<std::string> dir;
         if (env) {
-            dir = getenv(env);
+            dir = getEnvironment(env);
         }
         if (!dir) {
             dir = defaultPath;
         }
+        assert(dir.has_value());
 
-        auto rawDirs = stringutils::split(dir, ":");
+        auto rawDirs = stringutils::split(*dir, ":");
         for (auto &rawDir : rawDirs) {
             rawDir = fs::cleanPath(rawDir);
         }
@@ -314,8 +335,8 @@ StandardPath::StandardPath(bool skipFcitxPath)
 StandardPath::~StandardPath() = default;
 
 const StandardPath &StandardPath::global() {
-    bool skipFcitx = checkBoolEnvVar("SKIP_FCITX_PATH");
-    bool skipUser = checkBoolEnvVar("SKIP_FCITX_USER_PATH");
+    static bool skipFcitx = checkBoolEnvVar("SKIP_FCITX_PATH");
+    static bool skipUser = checkBoolEnvVar("SKIP_FCITX_USER_PATH");
     static StandardPath globalPath(skipFcitx, skipUser);
     return globalPath;
 }
@@ -627,9 +648,13 @@ bool StandardPath::safeSave(Type type, const std::string &pathOrig,
     }
     try {
         if (callback(file.fd())) {
-
+#ifdef _WIN32
+            auto wfile = utf8::UTF8ToUTF16(file.tempPath());
+            ::_wchmod(wfile.data(), 0666 & ~(d->umask()));
+#else
             // close it
             fchmod(file.fd(), 0666 & ~(d->umask()));
+#endif
             return true;
         }
     } catch (const std::exception &) {
@@ -647,7 +672,7 @@ std::map<std::string, std::string> StandardPath::locateWithFilter(
     scanFiles(type, path,
               [&result, &filter](const std::string &path,
                                  const std::string &dir, bool isUser) {
-                  if (!result.count(path) && filter(path, dir, isUser)) {
+                  if (!result.contains(path) && filter(path, dir, isUser)) {
                       auto fullPath = constructPath(dir, path);
                       if (fs::isreg(fullPath)) {
                           result.emplace(path, std::move(fullPath));
@@ -668,7 +693,7 @@ StandardPathFileMap StandardPath::multiOpenFilter(
     scanFiles(type, path,
               [&result, flags, &filter](const std::string &path,
                                         const std::string &dir, bool isUser) {
-                  if (!result.count(path) && filter(path, dir, isUser)) {
+                  if (!result.contains(path) && filter(path, dir, isUser)) {
                       auto fullPath = constructPath(dir, path);
                       int fd = ::open(fullPath.c_str(), flags);
                       if (fd >= 0) {
@@ -730,9 +755,8 @@ std::string StandardPath::findExecutable(const std::string &name) {
     }
 
     std::string sEnv;
-    const char *pEnv = getenv("PATH");
-    if (pEnv) {
-        sEnv = pEnv;
+    if (auto pEnv = getEnvironment("PATH")) {
+        sEnv = std::move(*pEnv);
     } else {
 #if defined(_PATH_DEFPATH)
         sEnv = _PATH_DEFPATH;

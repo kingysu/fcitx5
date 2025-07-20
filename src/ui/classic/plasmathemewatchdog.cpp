@@ -18,8 +18,9 @@
 #include <string>
 #include <utility>
 #include "fcitx-utils/event.h"
+#include "fcitx-utils/eventloopinterface.h"
 #include "fcitx-utils/fs.h"
-#include "fcitx-utils/standardpath.h"
+#include "fcitx-utils/standardpaths.h"
 #include "fcitx-utils/unixfd.h"
 #include "common.h"
 
@@ -35,7 +36,7 @@ namespace fcitx::classicui {
 
 bool PlasmaThemeWatchdog::isAvailable() {
     static const std::string binaryName = PLASMA_THEME_GENERATOR;
-    return StandardPath::hasExecutable(binaryName);
+    return StandardPaths::hasExecutable(binaryName);
 }
 
 PlasmaThemeWatchdog::PlasmaThemeWatchdog(EventLoop *event,
