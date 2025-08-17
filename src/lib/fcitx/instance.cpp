@@ -185,25 +185,25 @@ void InstanceArgument::printUsage() const {
 
 InstancePrivate::InstancePrivate(Instance *q) : QPtrHolder<Instance>(q) {
 #ifdef ENABLE_KEYBOARD
+    xkbContext_.reset(xkb_context_new(XKB_CONTEXT_NO_FLAGS));
+    if (xkbContext_ == nullptr) {
+        return;
+    }
+
     const auto locale = getLocale();
     assert(locale.has_value());
-    xkbContext_.reset(xkb_context_new(XKB_CONTEXT_NO_FLAGS));
-    if (xkbContext_) {
-        xkb_context_set_log_level(xkbContext_.get(), XKB_LOG_LEVEL_CRITICAL);
+    xkb_context_set_log_level(xkbContext_.get(), XKB_LOG_LEVEL_CRITICAL);
+    xkbComposeTable_.reset(xkb_compose_table_new_from_locale(
+        xkbContext_.get(), locale->data(), XKB_COMPOSE_COMPILE_NO_FLAGS));
+    if (!xkbComposeTable_) {
+        FCITX_INFO() << "Trying to fallback to compose table for en_US.UTF-8";
         xkbComposeTable_.reset(xkb_compose_table_new_from_locale(
-            xkbContext_.get(), locale->data(), XKB_COMPOSE_COMPILE_NO_FLAGS));
-        if (!xkbComposeTable_) {
-            FCITX_INFO()
-                << "Trying to fallback to compose table for en_US.UTF-8";
-            xkbComposeTable_.reset(xkb_compose_table_new_from_locale(
-                xkbContext_.get(), "en_US.UTF-8",
-                XKB_COMPOSE_COMPILE_NO_FLAGS));
-        }
-        if (!xkbComposeTable_) {
-            FCITX_WARN()
-                << "No compose table is loaded, you may want to check your "
-                   "locale settings.";
-        }
+            xkbContext_.get(), "en_US.UTF-8", XKB_COMPOSE_COMPILE_NO_FLAGS));
+    }
+    if (!xkbComposeTable_) {
+        FCITX_WARN()
+            << "No compose table is loaded, you may want to check your "
+               "locale settings.";
     }
 #endif
 }
