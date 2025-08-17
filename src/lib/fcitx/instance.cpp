@@ -185,16 +185,7 @@ void InstanceArgument::printUsage() const {
 
 InstancePrivate::InstancePrivate(Instance *q) : QPtrHolder<Instance>(q) {
 #ifdef ENABLE_KEYBOARD
-    auto locale = getEnvironment("LC_ALL");
-    if (!locale) {
-        locale = getEnvironment("LC_CTYPE");
-    }
-    if (!locale) {
-        locale = getEnvironment("LANG");
-    }
-    if (!locale) {
-        locale = "C";
-    }
+    const auto locale = getLocale();
     assert(locale.has_value());
     xkbContext_.reset(xkb_context_new(XKB_CONTEXT_NO_FLAGS));
     if (xkbContext_) {
@@ -224,6 +215,20 @@ InstancePrivate::watchEvent(EventType type, EventWatcherPhase phase,
 }
 
 #ifdef ENABLE_KEYBOARD
+std::optional<std::string> InstancePrivate::getLocale() {
+    const std::vector<const char *> variableList = {"LC_ALL", "LC_CTYPE",
+                                                    "LANG"};
+
+    for (const char *variable : variableList) {
+        const auto locale = getEnvironment(variable);
+        if (locale) {
+            return locale;
+        }
+    }
+
+    return "C";
+}
+
 xkb_keymap *InstancePrivate::keymap(const std::string &display,
                                     const std::string &layout,
                                     const std::string &variant) {

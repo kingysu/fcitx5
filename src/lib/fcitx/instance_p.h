@@ -133,6 +133,8 @@ public:
     watchEvent(EventType type, EventWatcherPhase phase, EventHandler callback);
 
 #ifdef ENABLE_KEYBOARD
+    static std::optional<std::string> getLocale();
+
     xkb_keymap *keymap(const std::string &display, const std::string &layout,
                        const std::string &variant);
 #endif
